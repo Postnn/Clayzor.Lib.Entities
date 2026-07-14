@@ -18,6 +18,7 @@
 | `ClayGridDefinition` | Record: определение грида (GridId, Title, Sql, IdColumn, EditForm, NewForm, SqlDelete, …) |
 | `ClayColumnDefinition` | Record: определение колонки (ColumnId, Column, Header, UrlKey, Order, Format, Type) |
 | `ClayGridDefinitionData` | Класс данных: `LoadGridAsync`/`LoadColumnsAsync` (SQL через `DynamicSql`) + чистые функции `BuildGridSql`/`BuildColumnsSql`/`MapDefinition`/`MapColumn` (тестируются без БД) |
+| `ClayGridUserParamsData` | Класс данных: `BuildParamName` (префикс+gridId), `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД), `LoadAsync`/`SaveAsync` |
 
 **Правила:**
 - Никакого создания `DbManager` внутри — он передаётся параметром
