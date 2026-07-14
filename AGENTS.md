@@ -5,3 +5,17 @@
 
 ## Adding a new entity
 → [docs/adding-new-entity.md](docs/adding-new-entity.md)
+
+## DynamicGrid — динамические SQL-помощники
+
+Пакет `Clayzor.Lib.Entities.DynamicGrid` — доступ к БД для динамического режима ClayGrid.
+Весь произвольный SQL выполняется **только здесь**; слой Controls вызывает эти методы, передавая инжектированный `DbManager Db`.
+
+| Класс | Назначение |
+|---|---|
+| `DynamicSql` | Статические методы выполнения динамического SQL: `QueryRowsAsync` (SELECT → словари), `QueryPagedRowsAsync` (ROW_NUMBER, ≡ `Entity.GetPagedAsync`), `QueryCountAsync` (COUNT), `QueryPairsAsync` (пары для Тип 5), `QueryTriplesAsync` (тройки для Тип 9), `ExecuteAsync` (DELETE/INSERT/UPDATE, `CommandType.Text`) |
+
+**Правила:**
+- Никакого создания `DbManager` внутри — он передаётся параметром
+- Пагинация — `ROW_NUMBER() OVER (ORDER BY ...)`, параметры `@__start`/`@__end` (SQL Server 2008 R2)
+- Все значения — только через Dapper-параметры (`@param`), без конкатенации
