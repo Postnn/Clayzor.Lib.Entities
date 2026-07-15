@@ -25,7 +25,7 @@ public static class ClayGridDefinitionData
     public static string BuildColumnsSql(string columnsTable, ClayGridSchemaMap s)
     {
         var c = s.Columns;
-        return $"SELECT [{c.ColumnId}],[{c.GridId}],[{c.Column}],[{c.Header}],[{c.UrlKey}],[{c.Order}],[{c.Format}],[{c.Type}] FROM [{columnsTable}] WHERE [{c.GridId}] = @gridId ORDER BY [{c.Order}]";
+        return $"SELECT [{c.ColumnId}],[{c.GridId}],[{c.Column}],[{c.Header}],[{c.UrlKey}],[{c.Order}],[{c.Format}],[{c.Type}] FROM [{columnsTable}] WHERE [{c.GridId}] = @gridId ORDER BY [{c.Order}], [{c.ColumnId}]";
     }
 
     /// <summary>
