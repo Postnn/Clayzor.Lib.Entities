@@ -20,6 +20,8 @@ public static class DynamicSql
     {
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         var rows = await db.RunAsync(c => c.QueryAsync(cmd));
+        if (rows is null)
+            return [];
         return rows
             .Select(r => (IReadOnlyDictionary<string, object?>)
                 new ReadOnlyDictionary<string, object?>((IDictionary<string, object?>)r))
@@ -50,6 +52,8 @@ public static class DynamicSql
 
         var cmd = new CommandDefinition(sql, parameters, cancellationToken: ct);
         var rows = await db.RunAsync(c => c.QueryAsync(cmd));
+        if (rows is null)
+            return [];
         return rows
             .Select(r => (IReadOnlyDictionary<string, object?>)
                 new ReadOnlyDictionary<string, object?>((IDictionary<string, object?>)r))
@@ -81,6 +85,8 @@ public static class DynamicSql
     {
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?)>(cmd));
+        if (rows is null)
+            return [];
         return rows.Select(r => (r.Item1, r.Item2)).ToList();
     }
 
@@ -93,6 +99,8 @@ public static class DynamicSql
     {
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?, string?)>(cmd));
+        if (rows is null)
+            return [];
         return rows.Select(r => (r.Item1, r.Item2, r.Item3)).ToList();
     }
 
