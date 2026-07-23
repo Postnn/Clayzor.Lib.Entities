@@ -12,6 +12,7 @@ namespace Clayzor.Lib.Entities.DynamicGrid;
 /// <param name="EditForm">URL формы редактирования (может быть null).</param>
 /// <param name="NewForm">URL формы добавления (может быть null).</param>
 /// <param name="SqlDelete">SQL DELETE с параметром @id (может быть null).</param>
+/// <param name="SupportsQuickSearch">true — в таблице колонок есть УчаствуетВБыстромПоиске.</param>
 public sealed record ClayGridDefinition(
     int GridId,
     string? Title,
@@ -21,4 +22,5 @@ public sealed record ClayGridDefinition(
     string? IdNameColumn,
     string? EditForm,
     string? NewForm,
-    string? SqlDelete);
+    string? SqlDelete,
+    bool SupportsQuickSearch = false);

@@ -22,3 +22,9 @@ internal static class MedAT
     public const string КодТипаМедицинскогоАнализа = "КодТипаМедицинскогоАнализа";
     public const string ТипМедицинскогоАнализа     = "ТипМедицинскогоАнализа";
 }
+
+internal static class ClayGridCols
+{
+    // Таблица ClayGridColumns — опциональная колонка быстрого поиска
+    public const string УчаствуетВБыстромПоиске = "УчаствуетВБыстромПоиске";
+}

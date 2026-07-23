@@ -11,6 +11,7 @@ namespace Clayzor.Lib.Entities.DynamicGrid;
 /// <param name="Order">Порядок сортировки (0/NULL — скрыта по умолчанию).</param>
 /// <param name="Format">Строка формата (зависит от типа).</param>
 /// <param name="Type">Тип колонки (1–13, см. ClayColumnKind).</param>
+/// <param name="QuickSearch">Участвует в быстром поиске (1→true, 0/NULL/нет колонки→false).</param>
 public sealed record ClayColumnDefinition(
     int ColumnId,
     int GridId,
@@ -19,4 +20,5 @@ public sealed record ClayColumnDefinition(
     string? UrlKey,
     int? Order,
     string? Format,
-    int Type);
+    int Type,
+    bool QuickSearch = false);

@@ -34,14 +34,16 @@ public sealed class ClayGridSchemaMap
     /// <summary>Имена колонок таблицы ClayGridColumns.</summary>
     public sealed class ColumnCols
     {
-        public string ColumnId { get; set; } = "КодКолонки";
-        public string GridId   { get; set; } = "КодЗапроса";
-        public string Column   { get; set; } = "Колонка";
-        public string Header   { get; set; } = "ЗаголовокКолонки";
-        public string UrlKey   { get; set; } = "КлючURL";
-        public string Order    { get; set; } = "Порядок";
-        public string Format   { get; set; } = "Формат";
-        public string Type     { get; set; } = "Тип";
+        public string ColumnId     { get; set; } = "КодКолонки";
+        public string GridId       { get; set; } = "КодЗапроса";
+        public string Column       { get; set; } = "Колонка";
+        public string Header       { get; set; } = "ЗаголовокКолонки";
+        public string UrlKey       { get; set; } = "КлючURL";
+        public string Order        { get; set; } = "Порядок";
+        public string Format       { get; set; } = "Формат";
+        public string Type         { get; set; } = "Тип";
+        /// <summary>Опциональная колонка: участие в быстром поиске (tinyint, 1=да).</summary>
+        public string QuickSearch  { get; set; } = "УчаствуетВБыстромПоиске";
     }
 
     /// <summary>Имена колонок таблицы ClayGridUserParams.</summary>
