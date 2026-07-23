@@ -11,8 +11,18 @@ public static class ClayGridUserParamsData
 {
     /// <summary>
     /// Строит имя параметра: префикс + gridId. ЧИСТАЯ функция.
+    /// Бросает <see cref="InvalidOperationException"/>, если результат длиннее 20 символов
+    /// (ограничение колонки <c>Параметр varchar(20)</c> — ошибка программиста, не пользователя).
     /// </summary>
-    public static string BuildParamName(string prefix, int gridId) => prefix + gridId;
+    public static string BuildParamName(string prefix, int gridId)
+    {
+        var name = prefix + gridId;
+        if (name.Length > 20)
+            throw new InvalidOperationException(
+                $"Имя параметра \"{name}\" длиннее 20 символов (varchar(20)). " +
+                $"Уменьшите префикс \"{prefix}\" или идентификатор запроса.");
+        return name;
+    }
 
     /// <summary>
     /// Строит SQL SELECT для чтения параметров пользователя.
