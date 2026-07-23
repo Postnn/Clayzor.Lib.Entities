@@ -14,11 +14,11 @@
 | Класс | Назначение |
 |---|---|
 | `DynamicSql` | Статические методы выполнения динамического SQL: `QueryRowsAsync` (SELECT → словари), `QueryPagedRowsAsync` (ROW_NUMBER, ≡ `Entity.GetPagedAsync`), `QueryCountAsync` (COUNT), `QueryPairsAsync` (пары для Тип 5), `QueryTriplesAsync` (тройки для Тип 9), `ExecuteAsync` (DELETE/INSERT/UPDATE, `CommandType.Text`) |
-| `ClayGridSchemaMap` | Имена колонок трёх таблиц (Settings, Columns, UserParams). Русские дефолты, переопределяются в appsettings |
-| `ClayGridDefinition` | Record: определение грида (GridId, Title, Sql, IdColumn, EditForm, NewForm, SqlDelete, …) |
-| `ClayColumnDefinition` | Record: определение колонки (ColumnId, Column, Header, UrlKey, Order, Format, Type) |
-| `ClayGridDefinitionData` | Класс данных: `LoadGridAsync`/`LoadColumnsAsync` (SQL через `DynamicSql`) + чистые функции `BuildGridSql`/`BuildColumnsSql`/`MapDefinition`/`MapColumn` (тестируются без БД) |
-| `ClayGridUserParamsData` | Класс данных: `BuildParamName` (префикс+gridId), `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД), `LoadAsync`/`SaveAsync` |
+| `ClayGridSchemaMap` | Имена колонок трёх таблиц (Settings, Columns, UserParams). Columns.QuickSearch = `"УчаствуетВБыстромПоиске"` (опциональная колонка). Русские дефолты, переопределяются в appsettings |
+| `ClayGridDefinition` | Record: определение грида (GridId, Title, Sql, IdColumn, EditForm, NewForm, SqlDelete, SupportsQuickSearch) |
+| `ClayColumnDefinition` | Record: определение колонки (ColumnId, Column, Header, UrlKey, Order, Format, Type, QuickSearch). QuickSearch: 1→true, 0/NULL/нет колонки→false |
+| `ClayGridDefinitionData` | Класс данных: `LoadGridWithQuickSearchAsync`, `LoadColumnsAsync` (SQL через `DynamicSql`), `CheckQuickSearchSupportAsync` (COL_LENGTH), `BuildColumnsSqlWithQuickSearch`, `MapColumn` (с флагом QuickSearch) + чистые функции (тестируются без БД) |
+| `ClayGridUserParamsData` | Класс данных: `BuildParamName` (префикс+gridId, валидация ≤20 символов), `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД), `LoadAsync`/`SaveAsync` |
 
 **Правила:**
 - Никакого создания `DbManager` внутри — он передаётся параметром
