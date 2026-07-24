@@ -1,0 +1,90 @@
+using Clayzor.Lib.DALC;
+using Clayzor.Lib.Entities.DynamicGrid;
+using Dapper;
+
+namespace Clayzor.Lib.Entities.Tree;
+
+/// <summary>
+/// Класс данных дерева: выполняет запросы уровней через <see cref="DynamicSql"/>.
+/// DbManager не создаёт — получает параметром (правило слоя данных решения).
+/// </summary>
+public static class ClayTreeData
+{
+    /// <summary>Загружает один уровень: детей узла или корневой уровень.</summary>
+    public static async Task<List<ClayTreeRow>> LoadLevelAsync(
+        DbManager db, ClayTreeSource src, ClayTreeRow? parent, CancellationToken ct = default)
+    {
+        var isRoot = parent is null;
+        var sql = ClayTreeSqlBuilder.BuildLevelSql(src, isRoot);
+        var dp = BuildParams(src, parent);
+        var rows = await DynamicSql.QueryRowsAsync(db, sql, dp, ct: ct);
+        return rows.Select(MapRow).ToList();
+    }
+
+    /// <summary>Загружает один узел по идентификатору; null — узла нет.</summary>
+    public static async Task<ClayTreeRow?> LoadNodeAsync(
+        DbManager db, ClayTreeSource src, object? id, CancellationToken ct = default)
+    {
+        if (id is null) return null;
+        var sql = ClayTreeSqlBuilder.BuildNodeSql(src);
+        var dp = new DynamicParameters();
+        dp.Add(ClayTreeSqlBuilder.ParentParam, id);
+        var rows = await DynamicSql.QueryRowsAsync(db, sql, dp, ct: ct);
+        return rows.Select(MapRow).FirstOrDefault();
+    }
+
+    private static DynamicParameters BuildParams(ClayTreeSource src, ClayTreeRow? parent)
+    {
+        var dp = new DynamicParameters();
+        if (parent is null)
+        {
+            if (src.RootId is not null)
+            {
+                dp.Add(ClayTreeSqlBuilder.ParentParam, src.RootId);
+            }
+            else if (src.Mode == ClayTreeHierarchyMode.ParentKey && src.Schema.RootParentValue is not null)
+            {
+                dp.Add(ClayTreeSqlBuilder.RootParentParam, src.Schema.RootParentValue);
+            }
+        }
+        else
+        {
+            dp.Add(ClayTreeSqlBuilder.ParentParam, parent.Id);
+            if (src.Mode == ClayTreeHierarchyMode.NestedSet)
+            {
+                dp.Add(ClayTreeSqlBuilder.LeftParam, parent.Left);
+                dp.Add(ClayTreeSqlBuilder.RightParam, parent.Right);
+                if (src.Schema.LevelColumn is not null)
+                    dp.Add(ClayTreeSqlBuilder.LevelParam, parent.Level);
+            }
+        }
+
+        return dp;
+    }
+
+    private static ClayTreeRow MapRow(IReadOnlyDictionary<string, object?> row)
+    {
+        var r = new ClayTreeRow
+        {
+            Id          = row.GetValueOrDefault(ClayTreeSqlBuilder.AliasId),
+            Text        = row.GetValueOrDefault(ClayTreeSqlBuilder.AliasText)?.ToString() ?? "",
+            HasChildren = Convert.ToInt32(row.GetValueOrDefault(ClayTreeSqlBuilder.AliasHasChildren) ?? 0) == 1,
+        };
+
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasParent, out var p)) r.ParentId = p;
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasLeft, out var l)) r.Left = l as long? ?? (l is int li ? li : null);
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasRight, out var ri)) r.Right = ri as long? ?? (ri is int rii ? rii : null);
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasLevel, out var lv)) r.Level = lv as int? ?? (lv is long ll ? (int?)ll : null);
+
+        // Raw: ключи, не начинающиеся с '_'
+        var raw = new Dictionary<string, object?>();
+        foreach (var kv in row)
+        {
+            if (!kv.Key.StartsWith("_"))
+                raw[kv.Key] = kv.Value;
+        }
+        r.Raw = raw;
+
+        return r;
+    }
+}
