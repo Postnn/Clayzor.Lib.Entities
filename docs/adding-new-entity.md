@@ -138,22 +138,15 @@ public static void Initialize()
 <PageTitle>Новые записи</PageTitle>
 
 <ClayGrid TEntity="IClayGridRow"
-           @ref="_dataGrid"
-           DataLoader="this"
-           Title="Новые записи"
-           SelectSql="@SQLQueries.SELECT_НоваяТаблица"
-           SearchColumns="@(new[]{"НазваниеНовойЗаписи"})"
-           DefaultOrder="НазваниеНовойЗаписи"
-           EditDialogType="@typeof(NewEntityEditDialog)"
-           Items="_rows"
-           Loading="_loading"
-           PageSize="@AppSettings.DefaultPageSize"
-           FilterColumnTypes="@FilterColumnTypes"
-            TotalCount="@_query.TotalCount"
-            PageNumber="@_query.PageNumber"
-            ShowPagination="true"
-            OnAdd="OpenAddDialog"
-            OnGroupToggle="ToggleGroup">
+          @ref="_dataGrid"
+          Options="_gridOptions"
+          DataLoader="this"
+          Items="_rows"
+          Loading="_loading"
+          TotalCount="@_query.TotalCount"
+          PageNumber="@_query.PageNumber"
+          OnAdd="OpenAddDialog"
+          OnGroupToggle="ToggleGroup">
 
 
     <ColumnDefs>
@@ -188,14 +181,24 @@ public static void Initialize()
 @code {
     private ClayGrid<IClayGridRow> _dataGrid = null!;
     protected override IClayGrid? Grid => _dataGrid;
+
+    private ClayGridOptions _gridOptions = null!;
+
+    protected override void OnInitialized()
+    {
+        _gridOptions = new ClayGridOptions
+        {
+            Title             = "Новые записи",
+            SelectSql         = SQLQueries.SELECT_НоваяТаблица,
+            SearchColumns     = ["НазваниеНовойЗаписи"],
+            DefaultOrder      = "НазваниеНовойЗаписи",
+            EditDialogType    = typeof(NewEntityEditDialog),
+            PageSize          = AppSettings.DefaultPageSize,
+            FilterColumnTypes = FilterColumnTypes,
+            ShowPagination    = true,
+        };
+    }
 }
 ```
 
-**Важно:** страница передаёт всю SQL-конфигурацию через параметры `<ClayGrid>`:
-- `SelectSql` — базовый SELECT
-- `SearchColumns` — выходные имена колонок для поиска и фильтрации (те же, что видны в подзапросе `ROW_NUMBER()`)
-- `DefaultOrder` — сортировка по умолчанию
-- `EditDialogType` — тип диалога редактирования
-- `DataLoader="this"` — подключает `IClayGridDataLoader`
-
-Никаких abstract-свойств на странице не требуется.
+**Важно:** конфигурация собирается в объект `ClayGridOptions` и передаётся параметром `Options`. Объект создаётся **один раз в поле страницы** (в `OnInitialized`), а не выражением в разметке — иначе новый объект на каждый рендер приведёт к лишним пересчётам. `DataLoader="this"` остаётся атрибутом тега.
