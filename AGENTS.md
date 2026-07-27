@@ -18,7 +18,8 @@
 | `ClayGridDefinition` | Record: определение грида (GridId, Title, Sql, IdColumn, EditForm, NewForm, SqlDelete, SupportsQuickSearch) |
 | `ClayColumnDefinition` | Record: определение колонки (ColumnId, Column, Header, UrlKey, Order, Format, Type, QuickSearch). QuickSearch: 1→true, 0/NULL/нет колонки→false |
 | `ClayGridDefinitionData` | Класс данных: `LoadGridWithQuickSearchAsync`, `LoadColumnsAsync` (SQL через `DynamicSql`), `CheckQuickSearchSupportAsync` (COL_LENGTH), `BuildColumnsSqlWithQuickSearch`, `MapColumn` (с флагом QuickSearch) + чистые функции (тестируются без БД) |
-| `ClayGridUserParamsData` | Класс данных: `BuildParamName` (префикс+gridId, валидация ≤20 символов), `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД), `LoadAsync`/`SaveAsync` |
+| `ClayGridUserParamsData` | Класс данных: `BuildParamName` (префикс+gridId, валидация ≤20 символов), `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД, колонка `SharedId`), `LoadAsync`/`SaveAsync` (с параметром `sharedId`, по умолчанию 0 — личные настройки) |
+| `ClayGridSharedParamsData` | Класс данных общих настроек (серия SH): `CreateAsync` (SCOPE_IDENTITY), `SaveParamsAsync` (цикл `SaveAsync`), `ListAsync` (DISTINCT JOIN, исключает служебный 0), `AnyAsync` (проверка наличия), `RenameAsync`, `DeleteAsync` (два шага: параметры→запись, без каскада), `LoadSharedParamsAsync` (через табличную функцию `UserParamsShared`), `CreateWithParamsAsync` (создание + параметры с компенсацией при ошибке) |
 
 **Правила:**
 - Никакого создания `DbManager` внутри — он передаётся параметром

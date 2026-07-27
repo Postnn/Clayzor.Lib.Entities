@@ -147,7 +147,8 @@ SELECT * FROM (
 | `ClayGridDefinition` | Record с определением грида (`GridId`, `Title`, `Sql`, `IdColumn`, `EditForm`, `NewForm`, `SqlDelete`, …). |
 | `ClayColumnDefinition` | Record с определением колонки (`ColumnId`, `Column`, `Header`, `UrlKey`, `Order`, `Format`, `Type`). |
 | `ClayGridDefinitionData` | Загрузка определения и колонок из БД (`LoadGridAsync`/`LoadColumnsAsync`) + чистые функции сборки SQL и маппинга (`BuildGridSql`/`BuildColumnsSql`/`MapDefinition`/`MapColumn`), тестируемые без БД. |
-| `ClayGridUserParamsData` | Пользовательские параметры грида: `BuildParamName`, `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД), `LoadAsync`/`SaveAsync`. |
+| `ClayGridUserParamsData` | Пользовательские параметры грида: `BuildParamName`, `BuildLoadSql`/`BuildInsertSql` (INSERT-only, upsert через триггер БД, колонка `SharedId`), `LoadAsync`/`SaveAsync` (с параметром `sharedId`, по умолчанию 0 — личные настройки). |
+| `ClayGridSharedParamsData` | Общие настройки грида (серия SH): `CreateAsync`, `SaveParamsAsync`, `ListAsync`, `AnyAsync`, `RenameAsync`, `DeleteAsync` (два шага, без каскада), `LoadSharedParamsAsync` (через TVF `UserParamsShared`), `CreateWithParamsAsync` (с компенсацией при ошибке). |
 
 **Правила пакета:**
 

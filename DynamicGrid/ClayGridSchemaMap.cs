@@ -52,5 +52,7 @@ public sealed class ClayGridSchemaMap
         public string ClientId { get; set; } = "КодНастройкиКлиента";
         public string Name     { get; set; } = "Параметр";
         public string Value    { get; set; } = "Значение";
+        /// <summary>Колонка: идентификатор общей настройки (0 = личная).</summary>
+        public string SharedId { get; set; } = "КодНастройкиОбщей";
     }
 }

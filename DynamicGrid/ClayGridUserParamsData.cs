@@ -26,13 +26,13 @@ public static class ClayGridUserParamsData
 
     /// <summary>
     /// Строит SQL SELECT для чтения параметров пользователя.
-    /// WHERE [ClientId] = @clid AND [Name] IN (@n0, @n1, …).
+    /// WHERE [ClientId] = @clid AND [SharedId] = @shid AND [Name] IN (@n0, @n1, …).
     /// </summary>
-    public static string BuildLoadSql(string table, ClayGridSchemaMap s, int nameCount)
+    public static string BuildLoadSql(string table, ClayGridSchemaMap s, int nameCount, int sharedId = 0)
     {
         var sc = s.UserParams;
         var inParams = string.Join(", ", Enumerable.Range(0, nameCount).Select(i => $"@n{i}"));
-        return $"SELECT [{sc.Name}],[{sc.Value}] FROM [{table}] WHERE [{sc.ClientId}] = @clid AND [{sc.Name}] IN ({inParams})";
+        return $"SELECT [{sc.Name}],[{sc.Value}] FROM [{table}] WHERE [{sc.ClientId}] = @clid AND [{sc.SharedId}] = @shid AND [{sc.Name}] IN ({inParams})";
     }
 
     /// <summary>
@@ -42,7 +42,7 @@ public static class ClayGridUserParamsData
     public static string BuildInsertSql(string table, ClayGridSchemaMap s)
     {
         var sc = s.UserParams;
-        return $"INSERT INTO [{table}] ([{sc.ClientId}],[{sc.Name}],[{sc.Value}]) VALUES (@clid,@name,@value)";
+        return $"INSERT INTO [{table}] ([{sc.ClientId}],[{sc.Name}],[{sc.Value}],[{sc.SharedId}]) VALUES (@clid,@name,@value,@shid)";
     }
 
     /// <summary>
@@ -51,14 +51,15 @@ public static class ClayGridUserParamsData
     /// </summary>
     public static async Task<IReadOnlyDictionary<string, string>> LoadAsync(
         DbManager db, int clientId, IReadOnlyList<string> paramNames,
-        string table, ClayGridSchemaMap s, CancellationToken ct = default)
+        string table, ClayGridSchemaMap s, int sharedId = 0, CancellationToken ct = default)
     {
         if (paramNames.Count == 0)
             return new Dictionary<string, string>();
 
-        var sql = BuildLoadSql(table, s, paramNames.Count);
+        var sql = BuildLoadSql(table, s, paramNames.Count, sharedId);
         var dp  = new DynamicParameters();
         dp.Add("clid", clientId);
+        dp.Add("shid", sharedId);
         for (int i = 0; i < paramNames.Count; i++)
             dp.Add($"n{i}", paramNames[i]);
 
@@ -76,13 +77,13 @@ public static class ClayGridUserParamsData
 
     /// <summary>
     /// Сохраняет ОДИН параметр пользователя через INSERT.
-    /// При повторном вызове с тем же clientId+name триггер БД делает UPDATE.
+    /// При повторном вызове с тем же clientId+name+sharedId триггер БД делает UPDATE.
     /// </summary>
     public static Task SaveAsync(
         DbManager db, int clientId, string name, string value,
-        string table, ClayGridSchemaMap s, CancellationToken ct = default)
+        string table, ClayGridSchemaMap s, int sharedId = 0, CancellationToken ct = default)
     {
         var sql = BuildInsertSql(table, s);
-        return DynamicSql.ExecuteAsync(db, sql, new { clid = clientId, name, value }, ct);
+        return DynamicSql.ExecuteAsync(db, sql, new { clid = clientId, name, value, shid = sharedId }, ct);
     }
 }
