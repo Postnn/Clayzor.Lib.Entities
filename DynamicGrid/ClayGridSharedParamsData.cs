@@ -67,8 +67,7 @@ public static class ClayGridSharedParamsData
     {
         foreach (var (name, value) in @params)
         {
-            // clientId = 0 для общих настроек: владелец выводится из первой
-            // строки параметров (КодНастройкиКлиента), а не дублируется в каждой.
+            // clientId = 0: владелец выводится из КодНастройкиКлиента строк параметров
             await ClayGridUserParamsData.SaveAsync(
                 db, clientId: 0, name, value, userParamsTable, s, sharedId: sharedId);
         }
@@ -79,7 +78,7 @@ public static class ClayGridSharedParamsData
     /// <summary>
     /// Строит SQL для получения списка общих настроек. Чистая функция.
     /// DISTINCT обязателен: одна настройка → много строк параметров.
-    /// КодНастройкиОбщей &lt;&gt; 0: служебная запись исключена из списка.
+    /// КодНастройкиОбщей <> 0: служебная запись исключена из списка.
     /// </summary>
     public static string BuildListSql(
         string sharedTable, string userParamsTable, ClayGridSchemaMap s, int nameCount)
@@ -87,13 +86,13 @@ public static class ClayGridSharedParamsData
         var sc = s.UserParams;
         var inParams = string.Join(", ", Enumerable.Range(0, nameCount).Select(i => $"@n{i}"));
         return $"-- Список общих настроек текущего грида. DISTINCT — одна настройка → много параметров.\n" +
-               $"-- КодНастройкиОбщей &lt;&gt; 0 — служебная запись исключена.\n" +
+               $"-- КодНастройкиОбщей <> 0 — служебная запись исключена.\n" +
                $"SELECT DISTINCT sh.[КодНастройкиОбщей], sh.[Название]\n" +
                $"FROM [{sharedTable}] sh\n" +
                $"INNER JOIN [{userParamsTable}] p\n" +
                $"    ON p.[{sc.SharedId}] = sh.[КодНастройкиОбщей]\n" +
                $"WHERE p.[{sc.ClientId}] = @clid\n" +
-               $"  AND p.[{sc.SharedId}] &lt;&gt; 0\n" +
+               $"  AND p.[{sc.SharedId}] <> 0\n" +
                $"  AND p.[{sc.Name}] IN ({inParams})\n" +
                $"ORDER BY sh.[Название]";
     }
@@ -138,7 +137,7 @@ public static class ClayGridSharedParamsData
                $"SELECT TOP 1 1\n" +
                $"FROM [{userParamsTable}]\n" +
                $"WHERE [{sc.ClientId}] = @clid\n" +
-               $"  AND [{sc.SharedId}] &lt;&gt; 0\n" +
+               $"  AND [{sc.SharedId}] <> 0\n" +
                $"  AND [{sc.Name}] IN ({inParams})";
     }
 
@@ -173,7 +172,7 @@ public static class ClayGridSharedParamsData
         $"UPDATE [{sharedTable}]\n" +
         $"   SET [Название] = @title\n" +
         $" WHERE [КодНастройкиОбщей] = @shid\n" +
-        $"   AND @shid &lt;&gt; 0";
+        $"   AND @shid <> 0";
 
     /// <summary>
     /// Переименовывает общую настройку.
@@ -205,7 +204,7 @@ public static class ClayGridSharedParamsData
         $"-- Удаление параметров общей настройки (шаг 1 из 2).\n" +
         $"DELETE FROM [{userParamsTable}]\n" +
         $" WHERE [{s.UserParams.SharedId}] = @shid\n" +
-        $"   AND @shid &lt;&gt; 0";
+        $"   AND @shid <> 0";
 
     /// <summary>
     /// Строит SQL для удаления записи общей настройки (шаг 2 из 2). Чистая функция.
@@ -214,7 +213,7 @@ public static class ClayGridSharedParamsData
         $"-- Удаление записи общей настройки (шаг 2 из 2).\n" +
         $"DELETE FROM [{sharedTable}]\n" +
         $" WHERE [КодНастройкиОбщей] = @shid\n" +
-        $"   AND @shid &lt;&gt; 0";
+        $"   AND @shid <> 0";
 
     /// <summary>
     /// Удаляет общую настройку: сначала дочерние параметры, затем родительскую запись.
