@@ -91,7 +91,19 @@ public static class ClayTreeSqlBuilder
             sb.Append(" WHERE s.[").Append(src.Schema.LeftColumn).Append("] > @").Append(LeftParam);
             sb.Append(" AND s.[").Append(src.Schema.RightColumn).Append("] < @").Append(RightParam);
             if (src.Schema.LevelColumn is not null)
+            {
                 sb.Append(" AND s.[").Append(src.Schema.LevelColumn).Append("] = @").Append(LevelParam).Append(" + 1");
+            }
+            else
+            {
+                // Колонки уровня нет: прямой ребёнок — узел внутри диапазона,
+                // для которого нет промежуточного предка внутри того же диапазона.
+                sb.Append(" AND NOT EXISTS (SELECT 1 FROM (").Append(src.SelectSql)
+                  .Append(") m WHERE m.[").Append(src.Schema.LeftColumn).Append("] > @").Append(LeftParam)
+                  .Append(" AND m.[").Append(src.Schema.RightColumn).Append("] < @").Append(RightParam)
+                  .Append(" AND m.[").Append(src.Schema.LeftColumn).Append("] < s.[").Append(src.Schema.LeftColumn)
+                  .Append("] AND m.[").Append(src.Schema.RightColumn).Append("] > s.[").Append(src.Schema.RightColumn).Append("])");
+            }
         }
 
         sb.Append(" ORDER BY ").Append(orderBy);
