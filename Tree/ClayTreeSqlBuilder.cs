@@ -33,6 +33,10 @@ public static class ClayTreeSqlBuilder
     public const string LevelParam = "level";
     /// <summary>Имя параметра «значение ссылки на корень» (режим ParentKey).</summary>
     public const string RootParentParam = "rootParent";
+    /// <summary>Имя параметра размера порции для кейсет-пагинации.</summary>
+    public const string PageSizeParam = "pageSize";
+    /// <summary>Имя параметра курсора для кейсет-пагинации (значение L последней загруженной ноды).</summary>
+    public const string CursorParam = "cursor";
 
     /// <summary>SQL для загрузки одного уровня. <c>isRoot</c> = true — корневой уровень.</summary>
     public static string BuildLevelSql(ClayTreeSource src, bool isRoot)
@@ -61,7 +65,13 @@ public static class ClayTreeSqlBuilder
     {
         var selectList = BuildSelectList(src);
         var sb = new StringBuilder();
-        sb.Append("SELECT ").Append(selectList);
+
+        // TOP — только для не-корневого NestedSet с пагинацией
+        if (!isRoot && src.PageSize is not null)
+            sb.Append("SELECT TOP (@").Append(PageSizeParam).Append(" + 1) ").Append(selectList);
+        else
+            sb.Append("SELECT ").Append(selectList);
+
         sb.Append(" FROM (").Append(src.SelectSql).Append(") s");
 
         if (isRoot)
@@ -103,6 +113,11 @@ public static class ClayTreeSqlBuilder
                   .Append(" AND m.[").Append(src.Schema.RightColumn).Append("] < @").Append(RightParam)
                   .Append(" AND m.[").Append(src.Schema.LeftColumn).Append("] < s.[").Append(src.Schema.LeftColumn)
                   .Append("] AND m.[").Append(src.Schema.RightColumn).Append("] > s.[").Append(src.Schema.RightColumn).Append("])");
+            }
+
+            if (src.PageSize is not null && src.Cursor is not null)
+            {
+                sb.Append(" AND s.[").Append(src.Schema.LeftColumn).Append("] > @").Append(CursorParam);
             }
         }
 

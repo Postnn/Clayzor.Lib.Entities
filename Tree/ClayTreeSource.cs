@@ -14,4 +14,6 @@ public sealed record ClayTreeSource(
     ClayTreeHierarchyMode Mode,
     ClayTreeSchema Schema,
     string? OrderBy = null,
-    object? RootId = null);
+    object? RootId = null,
+    int? PageSize = null,
+    long? Cursor = null);

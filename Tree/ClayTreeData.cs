@@ -56,6 +56,13 @@ public static class ClayTreeData
                 dp.Add(ClayTreeSqlBuilder.RightParam, parent.Right);
                 if (src.Schema.LevelColumn is not null)
                     dp.Add(ClayTreeSqlBuilder.LevelParam, parent.Level);
+
+                if (src.PageSize is not null)
+                {
+                    dp.Add(ClayTreeSqlBuilder.PageSizeParam, src.PageSize.Value);
+                    if (src.Cursor is not null)
+                        dp.Add(ClayTreeSqlBuilder.CursorParam, src.Cursor.Value);
+                }
             }
         }
 
