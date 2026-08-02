@@ -171,6 +171,28 @@ public static class ClayTreeSqlBuilder
             sb.Append(" AND (").Append(src.ExtraWhere).Append(")");
     }
 
+    /// <summary>
+    /// Извлекает суффикс (ASC/DESC/пусто) из части ORDER BY и валидирует его.
+    /// Бросает InvalidOperationException при недопустимом содержимом (защита от SQL-инъекции).
+    /// </summary>
+    private static string ExtractAndValidateSuffix(string trimmed, int spaceIdx)
+    {
+        if (spaceIdx <= 0)
+            return " ";
+
+        var suffix = trimmed[(spaceIdx + 1)..].Trim();
+        if (suffix.Length == 0)
+            return " ";
+
+        var upper = suffix.ToUpperInvariant();
+        if (upper is "ASC" or "DESC")
+            return " " + suffix;
+
+        throw new InvalidOperationException(
+            $"Недопустимое содержимое в ORDER BY после имени колонки: '{suffix}'. " +
+            "Допустимы только ASC или DESC.");
+    }
+
     private static string BuildSelectList(ClayTreeSource src)
     {
         var sb = new StringBuilder();
@@ -284,9 +306,10 @@ public static class ClayTreeSqlBuilder
         sb.Append("s.").Append(text).Append(" AS [").Append(AliasText).Append("], ");
         sb.Append("s.").Append(parent).Append(" AS [").Append(AliasParent).Append("], ");
         sb.Append("a.IsMatch AS [").Append(AliasIsMatch).Append("], ");
-        sb.Append("CASE WHEN a.IsMatch = 0 THEN 1 ELSE 0 END AS [").Append(AliasHasMatchChildren).Append("]");
+        sb.Append("CASE WHEN EXISTS (SELECT 1 FROM Chain c WHERE c.Parent = s.").Append(id).Append(" AND c.IsMatchSeed = 1) THEN 1 ELSE 0 END AS [").Append(AliasHasMatchChildren).Append("]");
         sb.Append(" FROM Src s JOIN Agg a ON a.Id = s.").Append(id);
         sb.Append(" ORDER BY ").Append(orderBy);
+        sb.Append(" OPTION (MAXRECURSION 200)");
 
         return sb.ToString();
     }
@@ -332,17 +355,13 @@ public static class ClayTreeSqlBuilder
             if (!knownColumns.Contains(name))
                 throw new InvalidOperationException($"Колонка '{name}' из ORDER BY не найдена в схеме источника дерева. Допустимые колонки: {string.Join(", ", knownColumns)}.");
 
+            // Извлекаем и валидируем суффикс (только ASC/DESC/пусто — защита от инъекции)
+            var suffix = ExtractAndValidateSuffix(trimmed, spaceIdx);
+
             // Оборачиваем в квадратные скобки если ещё не обёрнуто
-            var bracketed = name;
-            if (!trimmed.StartsWith("["))
-            {
-                var suffix = spaceIdx > 0 ? trimmed[(spaceIdx + 1)..] : "";
-                bracketed = $"[{name}]" + (suffix.Length > 0 ? " " + suffix : "");
-            }
-            else
-            {
-                bracketed = trimmed;
-            }
+            var bracketed = !trimmed.StartsWith("[")
+                ? $"[{name}]" + (suffix.Length > 0 ? " " + suffix : "")
+                : $"[{name}]" + suffix;
             checkedParts.Add(bracketed);
         }
 
