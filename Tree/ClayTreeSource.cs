@@ -8,6 +8,10 @@ namespace Clayzor.Lib.Entities.Tree;
 /// <c>Clayzor.Lib.Web.Controls</c>, а зависимость направлена Controls → Entities: слой данных
 /// не может его видеть. Поэтому у него свой immutable-тип, а компонент собирает
 /// <c>ClayTreeSource</c> из настроек в ОДНОМ месте (<c>ClaySqlTreeDataSource</c>).
+/// <para>
+/// <c>ExtraWhereParams</c> — значения Dapper-параметров, на которые ссылается
+/// <c>ExtraWhere</c> (имена без <c>@</c>). Задаются всегда вместе с <c>ExtraWhere</c>.
+/// </para>
 /// </remarks>
 public sealed record ClayTreeSource(
     string SelectSql,
@@ -17,4 +21,5 @@ public sealed record ClayTreeSource(
     object? RootId = null,
     int? PageSize = null,
     long? Cursor = null,
-    string? ExtraWhere = null);
+    string? ExtraWhere = null,
+    IReadOnlyDictionary<string, object?>? ExtraWhereParams = null);

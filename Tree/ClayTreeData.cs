@@ -67,6 +67,13 @@ public static class ClayTreeData
             }
         }
 
+        // Параметры ExtraWhere (дефолтный фильтр): добавляются в каждый запрос уровня
+        if (src.ExtraWhereParams is { Count: > 0 })
+        {
+            foreach (var (name, value) in src.ExtraWhereParams)
+                dp.Add(name, value);
+        }
+
         return dp;
     }
 
