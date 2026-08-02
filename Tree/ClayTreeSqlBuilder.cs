@@ -22,6 +22,10 @@ public static class ClayTreeSqlBuilder
     public const string AliasLevel = "_level";
     /// <summary>Псевдоним выходной колонки «есть дети»: <c>[_haschildren]</c>.</summary>
     public const string AliasHasChildren = "_haschildren";
+    /// <summary>Псевдоним выходной колонки «узел совпал с фильтром»: <c>[_ismatch]</c>.</summary>
+    public const string AliasIsMatch = "_ismatch";
+    /// <summary>Псевдоним выходной колонки «есть совпавшие потомки»: <c>[_hasmatchchildren]</c>.</summary>
+    public const string AliasHasMatchChildren = "_hasmatchchildren";
 
     /// <summary>Имя параметра идентификатора родителя.</summary>
     public const string ParentParam = "parentId";
@@ -37,6 +41,8 @@ public static class ClayTreeSqlBuilder
     public const string PageSizeParam = "pageSize";
     /// <summary>Имя параметра курсора для кейсет-пагинации (значение L последней загруженной ноды).</summary>
     public const string CursorParam = "cursor";
+    /// <summary>Имя параметра максимального числа совпадений в режиме фильтра.</summary>
+    public const string MaxParam = "max";
 
     /// <summary>SQL для загрузки одного уровня. <c>isRoot</c> = true — корневой уровень.</summary>
     public static string BuildLevelSql(ClayTreeSource src, bool isRoot)
@@ -195,6 +201,84 @@ public static class ClayTreeSqlBuilder
         {
             sb.Append(", s.[").Append(col).Append("]");
         }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Строит SQL-запрос режима фильтра: находит совпадения (TOP @max + 1), добирает всех
+    /// предков и проставляет флаги <c>[_ismatch]</c> / <c>[_hasmatchchildren]</c>.
+    /// </summary>
+    /// <param name="src">Источник данных дерева.</param>
+    /// <param name="whereClause">Фрагмент WHERE из <c>ClayCompositeSqlBuilder</c> (без слова WHERE).</param>
+    /// <param name="max">Максимальное число совпадений (MaxFilterRecords).</param>
+    public static string BuildFilterSql(ClayTreeSource src, string whereClause, int max)
+    {
+        src.Schema.Validate(src.Mode);
+        return src.Mode switch
+        {
+            ClayTreeHierarchyMode.NestedSet => BuildNestedSetFilterSql(src, whereClause, max),
+            ClayTreeHierarchyMode.ParentKey => BuildParentKeyFilterSql(src, whereClause, max),
+            _ => throw new InvalidOperationException($"Неизвестный режим иерархии: {src.Mode}"),
+        };
+    }
+
+    private static string BuildNestedSetFilterSql(ClayTreeSource src, string whereClause, int max)
+    {
+        var id = $"[{src.Schema.IdColumn}]";
+        var text = $"[{src.Schema.TextColumn}]";
+        var left = $"[{src.Schema.LeftColumn}]";
+        var right = $"[{src.Schema.RightColumn}]";
+        var parent = src.Schema.ParentColumn is not null ? $"[{src.Schema.ParentColumn}]" : null;
+        var orderBy = BuildOrderBy(src);
+
+        var sb = new StringBuilder();
+        sb.Append("WITH Src AS (SELECT * FROM (").Append(src.SelectSql).Append(") x),");
+        sb.Append("Matches AS (SELECT TOP (@").Append(MaxParam).Append(" + 1) s.").Append(left).Append(" AS L, s.").Append(right).Append(" AS R, s.").Append(id).Append(" AS Id FROM Src s WHERE ").Append(whereClause).Append(" ORDER BY s.").Append(left).Append(")");
+        sb.Append("SELECT s.").Append(id).Append(" AS [").Append(AliasId).Append("], ");
+        sb.Append("s.").Append(text).Append(" AS [").Append(AliasText).Append("]");
+        if (parent is not null)
+            sb.Append(", s.").Append(parent).Append(" AS [").Append(AliasParent).Append("]");
+        sb.Append(", s.").Append(left).Append(" AS [").Append(AliasLeft).Append("]");
+        sb.Append(", s.").Append(right).Append(" AS [").Append(AliasRight).Append("]");
+        if (src.Schema.LevelColumn is not null)
+            sb.Append(", s.[").Append(src.Schema.LevelColumn).Append("] AS [").Append(AliasLevel).Append("]");
+        sb.Append(", CASE WHEN EXISTS (SELECT 1 FROM Matches m WHERE m.Id = s.").Append(id).Append(") THEN 1 ELSE 0 END AS [").Append(AliasIsMatch).Append("]");
+        sb.Append(", CASE WHEN EXISTS (SELECT 1 FROM Matches m WHERE m.L > s.").Append(left).Append(" AND m.R < s.").Append(right).Append(") THEN 1 ELSE 0 END AS [").Append(AliasHasMatchChildren).Append("]");
+        sb.Append(" FROM Src s");
+        sb.Append(" WHERE EXISTS (SELECT 1 FROM Matches m WHERE m.Id = s.").Append(id).Append(")");
+        sb.Append(" OR EXISTS (SELECT 1 FROM Matches m WHERE s.").Append(left).Append(" < m.L AND s.").Append(right).Append(" > m.R)");
+        sb.Append(" ORDER BY s.").Append(left);
+
+        return sb.ToString();
+    }
+
+    private static string BuildParentKeyFilterSql(ClayTreeSource src, string whereClause, int max)
+    {
+        var id = $"[{src.Schema.IdColumn}]";
+        var text = $"[{src.Schema.TextColumn}]";
+        var parent = $"[{src.Schema.ParentColumn}]";
+        var orderBy = BuildOrderBy(src);
+
+        var sb = new StringBuilder();
+        sb.Append("WITH Src AS (SELECT * FROM (").Append(src.SelectSql).Append(") x),");
+        sb.Append("Matches AS (SELECT TOP (@").Append(MaxParam).Append(" + 1) s.").Append(id).Append(" AS Id, s.").Append(parent).Append(" AS Parent FROM Src s WHERE ").Append(whereClause).Append(" ORDER BY s.").Append(text).Append("),");
+        sb.Append("Chain AS (");
+        sb.Append("SELECT m.Id, m.Parent, CAST(1 AS bit) AS IsMatchSeed FROM Matches m");
+        sb.Append(" UNION ALL");
+        sb.Append(" SELECT p.").Append(id).Append(", p.").Append(parent).Append(", CAST(0 AS bit)");
+        sb.Append(" FROM Src p INNER JOIN Chain c ON p.").Append(id).Append(" = c.Parent");
+        sb.Append("),");
+        sb.Append("Agg AS (");
+        sb.Append("SELECT Id, MAX(CAST(IsMatchSeed AS int)) AS IsMatch FROM Chain GROUP BY Id");
+        sb.Append(")");
+        sb.Append("SELECT s.").Append(id).Append(" AS [").Append(AliasId).Append("], ");
+        sb.Append("s.").Append(text).Append(" AS [").Append(AliasText).Append("], ");
+        sb.Append("s.").Append(parent).Append(" AS [").Append(AliasParent).Append("], ");
+        sb.Append("a.IsMatch AS [").Append(AliasIsMatch).Append("], ");
+        sb.Append("CASE WHEN a.IsMatch = 0 THEN 1 ELSE 0 END AS [").Append(AliasHasMatchChildren).Append("]");
+        sb.Append(" FROM Src s JOIN Agg a ON a.Id = s.").Append(id);
+        sb.Append(" ORDER BY ").Append(orderBy);
 
         return sb.ToString();
     }

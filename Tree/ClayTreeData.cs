@@ -1,3 +1,4 @@
+using System.Data;
 using Clayzor.Lib.DALC;
 using Clayzor.Lib.Entities.DynamicGrid;
 using Dapper;
@@ -67,6 +68,32 @@ public static class ClayTreeData
         }
 
         return dp;
+    }
+
+    /// <summary>
+    /// Загружает набор узлов в режиме фильтра: совпадения + все их предки с флагами.
+    /// </summary>
+    /// <param name="db">Менеджер БД.</param>
+    /// <param name="src">Источник данных дерева.</param>
+    /// <param name="whereClause">Фрагмент WHERE из ClayCompositeSqlBuilder (без слова WHERE).</param>
+    /// <param name="dp">Параметры Dapper (метод НЕ добавляет @max — вызывающий должен добавить).</param>
+    /// <param name="max">Максимальное число совпадений.</param>
+    /// <param name="ct">Токен отмены.</param>
+    public static async Task<List<ClayTreeRow>> LoadFilteredAsync(
+        DbManager db, ClayTreeSource src, string whereClause, DynamicParameters dp, int max, CancellationToken ct = default)
+    {
+        if (!dp.ParameterNames.Contains(ClayTreeSqlBuilder.MaxParam))
+            dp.Add(ClayTreeSqlBuilder.MaxParam, max);
+
+        var sql = ClayTreeSqlBuilder.BuildFilterSql(src, whereClause, max);
+        var rawRows = await DynamicSql.QueryRowsAsync(db, sql, dp, ct: ct);
+        return rawRows.Select(rawRow =>
+        {
+            var r = MapRow(rawRow);
+            r.IsMatch          = Convert.ToInt32(rawRow.GetValueOrDefault(ClayTreeSqlBuilder.AliasIsMatch) ?? 0) == 1;
+            r.HasMatchChildren = Convert.ToInt32(rawRow.GetValueOrDefault(ClayTreeSqlBuilder.AliasHasMatchChildren) ?? 0) == 1;
+            return r;
+        }).ToList();
     }
 
     private static ClayTreeRow MapRow(IReadOnlyDictionary<string, object?> row)

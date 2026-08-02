@@ -27,6 +27,12 @@ public sealed class ClayTreeRow
     /// <summary>Есть ли у узла дочерние элементы (вычислено в SQL).</summary>
     public bool HasChildren { get; set; }
 
+    /// <summary>Узел сам удовлетворяет условиям фильтра (пометка «(!)»).</summary>
+    public bool IsMatch { get; set; }
+
+    /// <summary>Среди потомков узла есть удовлетворяющие фильтру (пометка «(отфильтровано)»).</summary>
+    public bool HasMatchChildren { get; set; }
+
     /// <summary>Дополнительные колонки (ключи без префикса <c>_</c>).</summary>
     public IReadOnlyDictionary<string, object?> Raw { get; set; } = new Dictionary<string, object?>();
 }
