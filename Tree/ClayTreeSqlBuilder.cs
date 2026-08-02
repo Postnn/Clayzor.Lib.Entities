@@ -127,6 +127,7 @@ public static class ClayTreeSqlBuilder
             }
         }
 
+        AppendExtraWhere(sb, src);
         sb.Append(" ORDER BY ").Append(orderBy);
         return sb.ToString();
     }
@@ -159,8 +160,15 @@ public static class ClayTreeSqlBuilder
             sb.Append(" WHERE s.[").Append(src.Schema.ParentColumn).Append("] = @").Append(ParentParam);
         }
 
+        AppendExtraWhere(sb, src);
         sb.Append(" ORDER BY ").Append(orderBy);
         return sb.ToString();
+    }
+
+    private static void AppendExtraWhere(StringBuilder sb, ClayTreeSource src)
+    {
+        if (!string.IsNullOrWhiteSpace(src.ExtraWhere))
+            sb.Append(" AND (").Append(src.ExtraWhere).Append(")");
     }
 
     private static string BuildSelectList(ClayTreeSource src)

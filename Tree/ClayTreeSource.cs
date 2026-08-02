@@ -16,4 +16,5 @@ public sealed record ClayTreeSource(
     string? OrderBy = null,
     object? RootId = null,
     int? PageSize = null,
-    long? Cursor = null);
+    long? Cursor = null,
+    string? ExtraWhere = null);
