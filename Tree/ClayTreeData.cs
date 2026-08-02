@@ -113,9 +113,12 @@ public static class ClayTreeData
         };
 
         if (row.TryGetValue(ClayTreeSqlBuilder.AliasParent, out var p)) r.ParentId = p;
-        if (row.TryGetValue(ClayTreeSqlBuilder.AliasLeft, out var l)) r.Left = l as long? ?? (l is int li ? li : null);
-        if (row.TryGetValue(ClayTreeSqlBuilder.AliasRight, out var ri)) r.Right = ri as long? ?? (ri is int rii ? rii : null);
-        if (row.TryGetValue(ClayTreeSqlBuilder.AliasLevel, out var lv)) r.Level = lv as int? ?? (lv is long ll ? (int?)ll : null);
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasLeft, out var l) && l is not null && l is not DBNull)
+            r.Left = Convert.ToInt64(l);
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasRight, out var ri) && ri is not null && ri is not DBNull)
+            r.Right = Convert.ToInt64(ri);
+        if (row.TryGetValue(ClayTreeSqlBuilder.AliasLevel, out var lv) && lv is not null && lv is not DBNull)
+            r.Level = Convert.ToInt32(lv);
 
         // Raw: ключи, не начинающиеся с '_'
         var raw = new Dictionary<string, object?>();
