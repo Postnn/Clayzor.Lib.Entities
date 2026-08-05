@@ -86,4 +86,24 @@ public static class ClayGridUserParamsData
         var sql = BuildInsertSql(table, s);
         return DynamicSql.ExecuteAsync(db, sql, new { clid = clientId, name, value, shid = sharedId }, ct);
     }
+
+    /// <summary>
+    /// Сохраняет НЕСКОЛЬКО параметров одним батч-запросом.
+    /// При повторном вызове с тем же clientId+name+sharedId триггер БД делает UPDATE.
+    /// </summary>
+    public static async Task SaveManyAsync(
+        DbManager db, int clientId, IReadOnlyList<(string Name, string Value)> items,
+        string table, ClayGridSchemaMap s, int sharedId = 0, CancellationToken ct = default)
+    {
+        if (items.Count == 0) return;
+        var sql = BuildInsertSql(table, s);
+        var rows = items.Select(it => new
+        {
+            clid = clientId,
+            name = it.Name,
+            value = (object?)it.Value ?? DBNull.Value,
+            shid = sharedId,
+        }).ToArray();
+        await DynamicSql.ExecuteAsync(db, sql, rows, ct);
+    }
 }
