@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Data;
 using Dapper;
 using Clayzor.Lib.DALC;
+using Microsoft.Data.SqlClient;
 
 namespace Clayzor.Lib.Entities.DynamicGrid;
 
@@ -19,13 +20,20 @@ public static class DynamicSql
         DbManager db, string sql, object? param = null, CancellationToken ct = default)
     {
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
-        var rows = await db.RunAsync(c => c.QueryAsync(cmd));
-        if (rows is null)
-            return [];
-        return rows
-            .Select(r => (IReadOnlyDictionary<string, object?>)
-                new ReadOnlyDictionary<string, object?>((IDictionary<string, object?>)r))
-            .ToList();
+        try
+        {
+            var rows = await db.RunAsync(c => c.QueryAsync(cmd));
+            if (rows is null)
+                return [];
+            return rows
+                .Select(r => (IReadOnlyDictionary<string, object?>)
+                    new ReadOnlyDictionary<string, object?>((IDictionary<string, object?>)r))
+                .ToList();
+        }
+        catch (SqlException ex) when (DbManager.IsConnectivityError(ex))
+        {
+            return []; // CTFR3: connectivity → пусто; handler уже вызван в RunAsync
+        }
     }
 
     /// <summary>
@@ -51,13 +59,20 @@ public static class DynamicSql
         parameters.Add("__end", pageNumber * pageSize);
 
         var cmd = new CommandDefinition(sql, parameters, cancellationToken: ct);
-        var rows = await db.RunAsync(c => c.QueryAsync(cmd));
-        if (rows is null)
-            return [];
-        return rows
-            .Select(r => (IReadOnlyDictionary<string, object?>)
-                new ReadOnlyDictionary<string, object?>((IDictionary<string, object?>)r))
-            .ToList();
+        try
+        {
+            var rows = await db.RunAsync(c => c.QueryAsync(cmd));
+            if (rows is null)
+                return [];
+            return rows
+                .Select(r => (IReadOnlyDictionary<string, object?>)
+                    new ReadOnlyDictionary<string, object?>((IDictionary<string, object?>)r))
+                .ToList();
+        }
+        catch (SqlException ex) when (DbManager.IsConnectivityError(ex))
+        {
+            return []; // CTFR3: connectivity → пусто; handler уже вызван в RunAsync
+        }
     }
 
     /// <summary>
@@ -73,7 +88,14 @@ public static class DynamicSql
         var sql = $"SELECT COUNT(*) FROM ({filteredSql}) AS _cnt";
 
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
-        return await db.RunAsync(c => c.ExecuteScalarAsync<int>(cmd));
+        try
+        {
+            return await db.RunAsync(c => c.ExecuteScalarAsync<int>(cmd));
+        }
+        catch (SqlException ex) when (DbManager.IsConnectivityError(ex))
+        {
+            return 0; // CTFR3: connectivity → 0; handler уже вызван в RunAsync
+        }
     }
 
     /// <summary>
@@ -84,10 +106,17 @@ public static class DynamicSql
         DbManager db, string sql, object? param = null, CancellationToken ct = default)
     {
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
-        var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?)>(cmd));
-        if (rows is null)
-            return [];
-        return rows.Select(r => (r.Item1, r.Item2)).ToList();
+        try
+        {
+            var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?)>(cmd));
+            if (rows is null)
+                return [];
+            return rows.Select(r => (r.Item1, r.Item2)).ToList();
+        }
+        catch (SqlException ex) when (DbManager.IsConnectivityError(ex))
+        {
+            return []; // CTFR3: connectivity → пусто; handler уже вызван в RunAsync
+        }
     }
 
     /// <summary>
@@ -98,10 +127,17 @@ public static class DynamicSql
         DbManager db, string sql, object? param = null, CancellationToken ct = default)
     {
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
-        var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?, string?)>(cmd));
-        if (rows is null)
-            return [];
-        return rows.Select(r => (r.Item1, r.Item2, r.Item3)).ToList();
+        try
+        {
+            var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?, string?)>(cmd));
+            if (rows is null)
+                return [];
+            return rows.Select(r => (r.Item1, r.Item2, r.Item3)).ToList();
+        }
+        catch (SqlException ex) when (DbManager.IsConnectivityError(ex))
+        {
+            return []; // CTFR3: connectivity → пусто; handler уже вызван в RunAsync
+        }
     }
 
     /// <summary>
