@@ -22,7 +22,7 @@ public static class DynamicSql
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         try
         {
-            var rows = await db.RunAsync(c => c.QueryAsync(cmd));
+            var rows = await db.RunDbAsync(c => c.QueryAsync(cmd));
             if (rows is null)
                 return [];
             return rows
@@ -61,7 +61,7 @@ public static class DynamicSql
         var cmd = new CommandDefinition(sql, parameters, cancellationToken: ct);
         try
         {
-            var rows = await db.RunAsync(c => c.QueryAsync(cmd));
+            var rows = await db.RunDbAsync(c => c.QueryAsync(cmd));
             if (rows is null)
                 return [];
             return rows
@@ -90,7 +90,7 @@ public static class DynamicSql
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         try
         {
-            return await db.RunAsync(c => c.ExecuteScalarAsync<int>(cmd));
+            return await db.RunDbAsync(c => c.ExecuteScalarAsync<int>(cmd));
         }
         catch (SqlException ex) when (DbManager.IsConnectivityError(ex))
         {
@@ -108,7 +108,7 @@ public static class DynamicSql
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         try
         {
-            var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?)>(cmd));
+            var rows = await db.RunDbAsync(c => c.QueryAsync<(object?, string?)>(cmd));
             if (rows is null)
                 return [];
             return rows.Select(r => (r.Item1, r.Item2)).ToList();
@@ -129,7 +129,7 @@ public static class DynamicSql
         var cmd = new CommandDefinition(sql, param, cancellationToken: ct);
         try
         {
-            var rows = await db.RunAsync(c => c.QueryAsync<(object?, string?, string?)>(cmd));
+            var rows = await db.RunDbAsync(c => c.QueryAsync<(object?, string?, string?)>(cmd));
             if (rows is null)
                 return [];
             return rows.Select(r => (r.Item1, r.Item2, r.Item3)).ToList();
@@ -147,6 +147,6 @@ public static class DynamicSql
         DbManager db, string sql, object? param = null, CancellationToken ct = default)
     {
         var cmd = new CommandDefinition(sql, param, commandType: CommandType.Text, cancellationToken: ct);
-        return await db.RunAsync(c => c.ExecuteAsync(cmd));
+        return await db.RunDbAsync(c => c.ExecuteAsync(cmd));
     }
 }
