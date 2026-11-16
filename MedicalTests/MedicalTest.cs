@@ -90,6 +90,9 @@ public static class DapperColumnMapper
         if (_initialized) return;
         RegisterColumnMap<MedicalTest>();
         RegisterColumnMap<MedicalTestType>();
+        RegisterColumnMap<Inventory.EquipmentType>();
+        RegisterColumnMap<Inventory.EquipmentModel>();
+        RegisterColumnMap<Inventory.Employee>();
         _initialized = true;
     }
 
