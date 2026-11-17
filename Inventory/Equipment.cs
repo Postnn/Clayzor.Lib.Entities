@@ -65,6 +65,7 @@ public sealed class Equipment
     public DateTime ReceivedAtUtc { get; set; }
 
     /// <summary>Идентификатор начального расположения.</summary>
+    [Column(LocationLookupColumns.КодРасположения)]
     public int? LocationId { get; set; }
 
     /// <summary>Примечание начального расположения.</summary>
