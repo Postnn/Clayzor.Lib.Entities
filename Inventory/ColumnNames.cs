@@ -84,6 +84,23 @@ internal static class PhonePoolColumns
     public const string ПулТелефона = "ПулТелефона";
 }
 
+internal static class PhoneColumns
+{
+    public const string КодТелефонногоНомера = "КодТелефонногоНомера";
+    public const string Телефон = "Телефон";
+    public const string КодТелефоннойСтанции = "КодТелефоннойСтанции";
+    public const string XorcomName = "XorcomName";
+    public const string Описание = "Описание";
+    public const string Основной = "Основной";
+    public const string КодОборудованияПодключения = "КодОборудованияПодключения";
+    public const string НомерАвтонабора = "НомерАвтонабора";
+    public const string ЗадержкаАвтонабора = "ЗадержкаАвтонабора";
+    public const string СрокВозврата = "СрокВозврата";
+    public const string Примечание = "Примечание";
+    public const string Изменил = "Изменил";
+    public const string Изменено = "Изменено";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";

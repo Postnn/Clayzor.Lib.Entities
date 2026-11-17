@@ -165,6 +165,18 @@ public sealed class Equipment
             throw new InvalidOperationException("Запись оборудования не найдена или не была обновлена.");
     }
 
+    /// <summary>Атомарно обновляет основные поля и diff телефонных связей.</summary>
+    public Task UpdateWithPhonesAsync(
+        DbManager db,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        if (Id <= 0)
+            throw new InvalidOperationException("Не указан идентификатор редактируемого оборудования.");
+        var command = EquipmentPhoneSaveBuilder.Build(this, original, current);
+        return db.ExecuteAsync(command.Sql, command.Parameters, commandType: CommandType.Text);
+    }
+
     internal DynamicParameters CreateUpdateParameters()
     {
         var parameters = new DynamicParameters();
