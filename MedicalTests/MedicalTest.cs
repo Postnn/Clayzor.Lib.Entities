@@ -100,6 +100,7 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.PersonLookup>();
         RegisterColumnMap<Inventory.DocumentLookup>();
         RegisterColumnMap<Inventory.LocationLookup>();
+        RegisterColumnMap<Inventory.PhonePoolLookup>();
         _initialized = true;
     }
 

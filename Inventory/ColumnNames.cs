@@ -69,6 +69,19 @@ internal static class EquipmentColumns
     public const string КодЛицаАрендатора = "КодЛицаАрендатора";
     public const string КодЛицаПоставщика = "КодЛицаПоставщика";
     public const string Примечания = "Примечания";
+    public const string ПодключенаКамера = "ПодключенаКамера";
+    public const string Списано = "Списано";
+    public const string КодДокументаСписания = "КодДокументаСписания";
+    public const string КодПулаТелефонов = "КодПулаТелефонов";
+    public const string КодДокументаПоступления = "КодДокументаПоступления";
+    public const string Изменил = "Изменил";
+    public const string Изменено = "Изменено";
+}
+
+internal static class PhonePoolColumns
+{
+    public const string КодПулаТелефонов = "КодПулаТелефонов";
+    public const string ПулТелефона = "ПулТелефона";
 }
 
 internal static class PersonLookupColumns

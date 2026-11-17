@@ -6,11 +6,11 @@ using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
-/// <summary>Новое оборудование, создаваемое хранимой процедурой вместе с начальными сведениями.</summary>
+/// <summary>Оборудование: создание через хранимую процедуру и редактирование основных полей.</summary>
 [Table("Оборудование")]
 public sealed class Equipment
 {
-    /// <summary>Идентификатор созданного оборудования.</summary>
+    /// <summary>Идентификатор оборудования.</summary>
     [Column(EquipmentColumns.КодОборудования)]
     public int Id { get; set; }
 
@@ -21,6 +21,42 @@ public sealed class Equipment
     /// <summary>Идентификатор модели оборудования.</summary>
     [Column(EquipmentModelColumns.КодМоделиОборудования)]
     public int? ModelId { get; set; }
+
+    /// <summary>Название модели оборудования.</summary>
+    [Column(EquipmentModelColumns.МодельОборудования)]
+    public string? ModelName { get; set; }
+
+    /// <summary>Парт-номер модели.</summary>
+    [Column(EquipmentModelColumns.PN)]
+    public string? PartNumber { get; set; }
+
+    /// <summary>Название типа оборудования.</summary>
+    [Column(EquipmentTypeColumns.ТипОборудования)]
+    public string? EquipmentTypeName { get; set; }
+
+    /// <summary>Подключена ли камера.</summary>
+    [Column(EquipmentColumns.ПодключенаКамера)]
+    public byte CameraIsConnected { get; set; }
+
+    /// <summary>Дата и время списания в UTC.</summary>
+    [Column(EquipmentColumns.Списано)]
+    public DateTime? WriteOffAtUtc { get; set; }
+
+    /// <summary>Идентификатор документа списания.</summary>
+    [Column(EquipmentColumns.КодДокументаСписания)]
+    public int? DocumentWriteOffId { get; set; }
+
+    /// <summary>Идентификатор телефонного пула.</summary>
+    [Column(EquipmentColumns.КодПулаТелефонов)]
+    public int? PhonePoolId { get; set; }
+
+    /// <summary>Идентификатор сотрудника, изменившего запись.</summary>
+    [Column(EquipmentColumns.Изменил)]
+    public int ChangedById { get; set; }
+
+    /// <summary>Дата и время последнего изменения в UTC.</summary>
+    [Column(EquipmentColumns.Изменено)]
+    public DateTime ChangedAtUtc { get; set; }
 
     /// <summary>Серийный номер.</summary>
     [Column(EquipmentColumns.SN)]
@@ -51,6 +87,7 @@ public sealed class Equipment
     public int? TenantId { get; set; }
 
     /// <summary>Идентификатор документа поступления ОУ.</summary>
+    [Column(EquipmentColumns.КодДокументаПоступления)]
     public int? DocumentReceiptOuId { get; set; }
 
     /// <summary>Идентификатор лица-поставщика.</summary>
@@ -64,14 +101,15 @@ public sealed class Equipment
     /// <summary>Дата и время поступления в UTC.</summary>
     public DateTime ReceivedAtUtc { get; set; }
 
-    /// <summary>Идентификатор начального расположения.</summary>
+    /// <summary>Идентификатор последнего либо начального расположения.</summary>
     [Column(LocationLookupColumns.КодРасположения)]
     public int? LocationId { get; set; }
 
     /// <summary>Примечание начального расположения.</summary>
     public string? LocationDescription { get; set; }
 
-    /// <summary>Идентификатор начального ответственного.</summary>
+    /// <summary>Идентификатор текущего либо начального ответственного.</summary>
+    [Column(EmployeeColumns.КодСотрудника)]
     public int? EmployeeId { get; set; }
 
     /// <summary>Примечание начального ответственного.</summary>
@@ -114,6 +152,39 @@ public sealed class Equipment
         if (Id <= 0)
             throw new InvalidOperationException("Хранимая процедура не вернула идентификатор созданного оборудования.");
         return Id;
+    }
+
+    /// <summary>Обновляет основные поля существующего оборудования по подтверждённому legacy-контракту.</summary>
+    public async Task UpdateAsync(DbManager db)
+    {
+        if (Id <= 0)
+            throw new InvalidOperationException("Не указан идентификатор редактируемого оборудования.");
+        var affected = await db.ExecuteAsync(
+            SQLQueries.UPDATE_Оборудование, CreateUpdateParameters(), commandType: CommandType.Text);
+        if (affected != 1)
+            throw new InvalidOperationException("Запись оборудования не найдена или не была обновлена.");
+    }
+
+    internal DynamicParameters CreateUpdateParameters()
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@КодОборудования", Id, DbType.Int32);
+        parameters.Add("@SN", SerialNumber ?? string.Empty, DbType.String, size: 50);
+        parameters.Add("@ПодключенаКамера", CameraIsConnected, DbType.Byte);
+        parameters.Add("@Списано", WriteOffAtUtc, DbType.DateTime);
+        parameters.Add("@КодДокументаСписания", DocumentWriteOffId, DbType.Int32);
+        parameters.Add("@СетевоеИмя", NetworkName ?? string.Empty, DbType.String, size: 50);
+        parameters.Add("@MACадрес", MacAddress ?? string.Empty, DbType.String, size: 12);
+        parameters.Add("@MACадрес2", MacAddress2 ?? string.Empty, DbType.String, size: 12);
+        parameters.Add("@MACадресILO", MacAddressIlo ?? string.Empty, DbType.String, size: 12);
+        parameters.Add("@Примечания", Description ?? string.Empty, DbType.String, size: 300);
+        parameters.Add("@КодЛицаВладельца", OwnerId, DbType.Int32);
+        parameters.Add("@КодЛицаАрендатора", TenantId, DbType.Int32);
+        parameters.Add("@КодЛицаПоставщика", ShipperId, DbType.Int32);
+        parameters.Add("@КодПулаТелефонов", PhonePoolId, DbType.Int32);
+        parameters.Add("@КодМоделиОборудования", ModelId, DbType.Int32);
+        parameters.Add("@КодДокументаПоступления", DocumentReceiptOuId, DbType.Int32);
+        return parameters;
     }
 
     internal DynamicParameters CreateInsertParameters()
