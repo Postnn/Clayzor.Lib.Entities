@@ -101,6 +101,14 @@ internal static class PhoneColumns
     public const string Изменено = "Изменено";
 }
 
+internal static class EquipmentPeriodColumns
+{
+    public const string От = "От";
+    public const string До = "До";
+    public const string Примечания = "Примечания";
+    public const string ИзменилФИО = "ИзменилФИО";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
