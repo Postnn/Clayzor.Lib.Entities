@@ -96,6 +96,10 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.ResourceLookup>();
         RegisterColumnMap<Inventory.MemoryType>();
         RegisterColumnMap<Inventory.Employee>();
+        RegisterColumnMap<Inventory.Equipment>();
+        RegisterColumnMap<Inventory.PersonLookup>();
+        RegisterColumnMap<Inventory.DocumentLookup>();
+        RegisterColumnMap<Inventory.LocationLookup>();
         _initialized = true;
     }
 

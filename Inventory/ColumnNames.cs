@@ -56,3 +56,37 @@ internal static class EmployeeColumns
     public const string Сотрудник = "Сотрудник";
     public const string Employee = "Employee";
 }
+
+internal static class EquipmentColumns
+{
+    public const string КодОборудования = "КодОборудования";
+    public const string SN = "SN";
+    public const string MACадрес = "MACадрес";
+    public const string MACадрес2 = "MACадрес2";
+    public const string MACадресILO = "MACадресILO";
+    public const string СетевоеИмя = "СетевоеИмя";
+    public const string КодЛицаВладельца = "КодЛицаВладельца";
+    public const string КодЛицаАрендатора = "КодЛицаАрендатора";
+    public const string КодЛицаПоставщика = "КодЛицаПоставщика";
+    public const string Примечания = "Примечания";
+}
+
+internal static class PersonLookupColumns
+{
+    public const string КодЛица = "КодЛица";
+    public const string Кличка = "Кличка";
+}
+
+internal static class DocumentLookupColumns
+{
+    public const string КодДокумента = "КодДокумента";
+    public const string НазваниеДокумента = "НазваниеДокумента";
+    public const string НомерДокумента = "НомерДокумента";
+    public const string ДатаДокумента = "ДатаДокумента";
+}
+
+internal static class LocationLookupColumns
+{
+    public const string КодРасположения = "КодРасположения";
+    public const string РасположениеPath1 = "РасположениеPath1";
+}
