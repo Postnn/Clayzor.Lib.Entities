@@ -113,7 +113,11 @@ public sealed class EquipmentModel : ILookupEntity
     public async Task<int> SaveAsync(DbManager db)
     {
         if (Id == 0)
-            Id = await db.ExecuteScalarAsync<int>(SQLQueries.INSERT_МоделиОборудования, SaveParameters(), commandType: CommandType.Text);
+        {
+            Id = await db.ExecuteWriteScalarAsync<int>(SQLQueries.INSERT_МоделиОборудования, SaveParameters());
+            if (Id <= 0)
+                throw new InvalidOperationException("База данных не вернула идентификатор созданной модели.");
+        }
         else
             await db.ExecuteAsync(SQLQueries.UPDATE_МоделиОборудования, SaveParameters(), commandType: CommandType.Text);
         return Id;
