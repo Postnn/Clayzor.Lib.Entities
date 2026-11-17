@@ -89,17 +89,20 @@ public sealed class Equipment
     /// <summary>Примечание бухгалтерского учёта.</summary>
     public string? AccountingDescription { get; set; }
 
-    /// <summary>Удаляет разделители из MAC-адреса и приводит его к верхнему регистру.</summary>
+    /// <summary>Удаляет разрешённые разделители из MAC-адреса и приводит его к верхнему регистру.</summary>
     public static string NormalizeMacAddress(string? value) =>
         string.IsNullOrWhiteSpace(value)
             ? string.Empty
-            : Regex.Replace(value, "[^0-9A-Fa-f]", string.Empty).ToUpperInvariant();
+            : Regex.Replace(value, @"[\s:\-.]", string.Empty).ToUpperInvariant();
 
-    /// <summary>Проверяет, что MAC-адрес пуст либо содержит ровно 12 шестнадцатеричных символов.</summary>
+    /// <summary>Проверяет, что MAC-адрес пуст либо содержит 12 hex-символов и только разрешённые разделители.</summary>
     public static bool IsValidMacAddress(string? value)
     {
-        var normalized = NormalizeMacAddress(value);
-        return normalized.Length == 0 || Regex.IsMatch(normalized, "^[0-9A-F]{12}$");
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+        if (!Regex.IsMatch(value, @"^[0-9A-Fa-f\s:.\-]+$"))
+            return false;
+        return Regex.IsMatch(NormalizeMacAddress(value), "^[0-9A-F]{12}$");
     }
 
     /// <summary>Создаёт оборудование через sp_Оборудование_Ins и возвращает output-идентификатор.</summary>
