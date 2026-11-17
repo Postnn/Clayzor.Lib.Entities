@@ -92,6 +92,9 @@ public static class DapperColumnMapper
         RegisterColumnMap<MedicalTestType>();
         RegisterColumnMap<Inventory.EquipmentType>();
         RegisterColumnMap<Inventory.EquipmentModel>();
+        RegisterColumnMap<Inventory.EquipmentModelUsage>();
+        RegisterColumnMap<Inventory.ResourceLookup>();
+        RegisterColumnMap<Inventory.MemoryType>();
         RegisterColumnMap<Inventory.Employee>();
         _initialized = true;
     }
