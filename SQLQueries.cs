@@ -480,6 +480,7 @@ SELECT TOP (@LimitPlusOne)
 FROM vwДокументы T0
 WHERE (@Search = '' OR T0.НазваниеДокумента LIKE '%' + @Search + '%' OR T0.НомерДокумента LIKE '%' + @Search + '%')
   AND (@PersonId IS NULL OR EXISTS (SELECT 1 FROM vwЛицаДокументов P WHERE P.КодДокумента = T0.КодДокумента AND P.КодЛица = @PersonId))
+  AND (@DocumentTypeId IS NULL OR T0.КодТипаДокумента = @DocumentTypeId)
 ORDER BY T0.ДатаДокумента DESC, T0.КодДокумента DESC";
 
     /// <summary>Документ по идентификатору. Параметр: Id.</summary>
@@ -547,7 +548,7 @@ INSERT INTO ТелефонныеНомераОборудование
     (КодТелефонногоНомера, КодОборудования, КодОборудованияПодключения, СрокВозврата, Примечание)
 VALUES ({0}, @КодОборудования, {1}, {2}, {3})";
 
-    /// <summary>Поиск телефонных номеров. Параметры: Search, LimitPlusOne.</summary>
+    /// <summary>Поиск телефонных номеров. Параметры legacy-функции, Search, LimitPlusOne и исключённые ID.</summary>
     public const string SELECT_ТелефонныеНомераДляВыбора = @"
 SELECT TOP (@LimitPlusOne)
        T0.КодТелефонногоНомера, -- идентификатор номера
@@ -557,12 +558,13 @@ SELECT TOP (@LimitPlusOne)
              '#' + CONVERT(varchar, T0.КодТелефонногоНомера)) AS Телефон, -- отображаемое имя
        T0.КодТелефоннойСтанции, -- идентификатор АТС
        ISNULL(S.XorcomName, '') AS XorcomName -- признак Xorcom
-FROM vwТелефонныеНомераИзменение T0
+FROM dbo.fn_НомераДляТелАппаратов(@LocationId, @EmployeeId, @EquipmentTypeId, @PhoneIdBase, @EquipmentId) F
+INNER JOIN vwТелефонныеНомераИзменение T0 ON T0.КодТелефонногоНомера = F.КодТелефонногоНомера
 LEFT JOIN Сотрудники E ON E.КодСотрудника = T0.КодСотрудника
 LEFT JOIN ТелефонныеСтанции S ON S.КодТелефоннойСтанции = T0.КодТелефоннойСтанции
-WHERE @Search = '' OR T0.ТелефонныйНомер LIKE '%' + @Search + '%'
-   OR T0.ПолныйНомер LIKE '%' + @Search + '%' OR T0.Подключено LIKE '%' + @Search + '%'
-   OR E.ФИО LIKE '%' + @Search + '%'
+WHERE (@Search = '' OR T0.ТелефонныйНомер LIKE '%' + @Search + '%'
+       OR T0.ПолныйНомер LIKE '%' + @Search + '%' OR T0.Подключено LIKE '%' + @Search + '%'
+       OR E.ФИО LIKE '%' + @Search + '%')
 ORDER BY Телефон";
 
     /// <summary>Телефонный номер по идентификатору. Параметр: Id.</summary>
