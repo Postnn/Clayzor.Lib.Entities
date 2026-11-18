@@ -186,6 +186,17 @@ internal static class LicenseColumns
     public const string Дистрибутив = "Дистрибутив";
 }
 
+internal static class SoftwareInstallationColumns
+{
+    public const string КодОборудованияПО = "КодОборудованияПО";
+    public const string КодПО = "КодПО";
+    public const string Установлено = "Установлено";
+    public const string Дистрибутив = "Дистрибутив";
+    public const string Деинсталировано = "Деинсталировано";
+    public const string ОтображаемоеНазвание = "ОтображаемоеНазвание";
+    public const string НазваниеПО = "НазваниеПО";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";

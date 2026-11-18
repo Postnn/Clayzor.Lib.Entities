@@ -115,6 +115,8 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.SimServiceType>();
         RegisterColumnMap<Inventory.EquipmentLicense>();
         RegisterColumnMap<Inventory.LicenseType>();
+        RegisterColumnMap<Inventory.EquipmentSoftwareInstallation>();
+        RegisterColumnMap<Inventory.SoftwareEquipmentLookup>();
         _initialized = true;
     }
 
