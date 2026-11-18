@@ -197,6 +197,18 @@ internal static class SoftwareInstallationColumns
     public const string НазваниеПО = "НазваниеПО";
 }
 
+internal static class AccountingColumns
+{
+    public const string КодОборудованияБухУчета = "КодОборудованияБухУчета";
+    public const string КодБухгалтерии = "КодБухгалтерии";
+    public const string Бухгалтерия = "Бухгалтерия";
+    public const string Арендатор = "Арендатор";
+    public const string Материал = "Материал";
+    public const string ИнвентарныйНомер = "ИнвентарныйНомер";
+    public const string ДатаПоступления = "ДатаПоступления";
+    public const string ДатаСписания = "ДатаСписания";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
