@@ -124,6 +124,7 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.UpsServerLink>();
         RegisterColumnMap<Inventory.UpsTest>();
         RegisterColumnMap<Inventory.EquipmentActualInventory>();
+        RegisterColumnMap<Inventory.EquipmentNetworkNameHistory>();
         _initialized = true;
     }
 

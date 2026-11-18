@@ -588,6 +588,18 @@ WHERE object_id = OBJECT_ID(@ProcedureName) AND name = @ParameterName";
     /// <summary>Синхронизация оборудования с Cisco Call Manager.</summary>
     public const string SP_PhoneSync_Ccm = "dbo.sp_CCM_PhoneSync";
 
+    /// <summary>История сетевых имён оборудования. Параметр: EquipmentId.</summary>
+    public const string SELECT_ОборудованиеСетевыеИмена = @"
+SELECT N.КодОборудования, -- оборудование
+       N.СетевоеИмя,       -- сетевое имя
+       N.Изменено,         -- время изменения UTC
+       N.Изменил,          -- идентификатор изменившего
+       E.ФИО AS ИзменилФИО -- ФИО изменившего
+FROM vwОборудованиеСетевыеИмена N
+LEFT JOIN Сотрудники E ON E.КодСотрудника = N.Изменил
+WHERE N.КодОборудования = @EquipmentId
+ORDER BY N.Изменено DESC";
+
     /// <summary>История расположений оборудования. Параметр: EquipmentId.</summary>
     public const string SELECT_ОборудованиеРасположение = @"
 SELECT R.КодОборудования, -- оборудование
