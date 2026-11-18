@@ -108,6 +108,9 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.EquipmentAccount>();
         RegisterColumnMap<Inventory.EquipmentComputerSnapshot>();
         RegisterColumnMap<Inventory.StandardConfiguration>();
+        RegisterColumnMap<Inventory.MobileContractLookup>();
+        RegisterColumnMap<Inventory.EquipmentSimCard>();
+        RegisterColumnMap<Inventory.EquipmentSimSecrets>();
         _initialized = true;
     }
 

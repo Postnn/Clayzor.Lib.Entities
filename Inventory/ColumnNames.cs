@@ -140,6 +140,24 @@ internal static class StandardConfigurationColumns
     public const string СтандартнаяКонфигурация = "СтандартнаяКонфигурация";
 }
 
+internal static class MobileContractColumns
+{
+    public const string КодДокумента = "КодДокумента";
+    public const string ДоговорНазвание = "ДоговорНазвание";
+    public const string КодЛицаЗаказчика = "КодЛицаЗаказчика";
+    public const string ТипЛицаЗаказчика = "ТипЛицаЗаказчика";
+}
+
+internal static class SimCardColumns
+{
+    public const string НомерТелефона = "НомерТелефона";
+    public const string КодДоговора = "КодДоговора";
+    public const string КодЛицаИсполнителя = "КодЛицаИсполнителя";
+    public const string КодЛицаПерсональныхДанных = "КодЛицаПерсональныхДанных";
+    public const string Договор = "Договор";
+    public const string ЛицоПерсональныхДанных = "ЛицоПерсональныхДанных";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";

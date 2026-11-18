@@ -802,4 +802,165 @@ ELSE
     VALUES (@КодОборудования, @С, @RAM, @RAMDetail, @HD, @HDDetail, @SSD, @SSDDetail,
             @КодСтандартнойКонфигурации1, @ДатаСтандартнойКонфигурации1,
             @КодСтандартнойКонфигурации2, @ДатаСтандартнойКонфигурации2, @Лицензия, @Примечания)";
+
+    /// <summary>Сведения SIM без PIN/PUK. Параметр: EquipmentId.</summary>
+    public const string SELECT_SIMКарты_КодОборудования = @"
+SELECT S.КодОборудования, -- оборудование
+       S.НомерТелефона, -- номер телефона
+       S.От, -- активация UTC
+       S.КодДоговора, -- договор связи
+       D.КодЛицаИсполнителя, -- лицо исполнителя
+       ISNULL(D.Исполнитель + ' - ' + D.Заказчик + ISNULL(' №' + NULLIF(D.НомерДокумента, ''), ''), '') AS Договор, -- договор
+       S.КодЛицаПерсональныхДанных, -- лицо ПДн
+       COALESCE(E.Сотрудник, C.Кличка) AS ЛицоПерсональныхДанных, -- название лица ПДн
+       S.Изменил, -- изменивший сотрудник
+       ISNULL(CH.ФИО, '') AS ИзменилФИО, -- ФИО изменившего
+       S.Изменено -- время изменения
+FROM vwSIMКарты S
+LEFT JOIN ДоговорыСвязи D ON S.КодДоговора = D.КодДокумента
+LEFT JOIN ЛицаЗаказчики C ON S.КодЛицаПерсональныхДанных = C.КодЛица
+LEFT JOIN Сотрудники E ON S.КодЛицаПерсональныхДанных = E.КодЛица
+LEFT JOIN Сотрудники CH ON S.Изменил = CH.КодСотрудника
+WHERE S.КодОборудования = @EquipmentId";
+
+    /// <summary>SIM по идентификатору без секретов. Параметр: EquipmentId.</summary>
+    public const string SELECT_SIMКарта_Одна = @"
+SELECT S.КодОборудования, -- оборудование
+       S.НомерТелефона, -- номер телефона
+       S.От, -- активация UTC
+       S.КодДоговора, -- договор связи
+       S.КодЛицаПерсональныхДанных, -- лицо ПДн
+       D.КодЛицаИсполнителя -- лицо исполнителя
+FROM vwSIMКарты S
+LEFT JOIN ДоговорыСвязи D ON S.КодДоговора = D.КодДокумента
+WHERE S.КодОборудования = @EquipmentId";
+
+    /// <summary>Секретные коды одной SIM. Параметр: EquipmentId.</summary>
+    public const string SELECT_SIMКарта_Секреты = @"
+SELECT PIN, -- PIN
+       PIN2, -- PIN2
+       PUK, -- PUK
+       PUK2 -- PUK2
+FROM vwSIMКарты
+WHERE КодОборудования = @EquipmentId";
+
+    /// <summary>Другая активная SIM с тем же номером. Параметры: EquipmentId, PhoneNumber.</summary>
+    public const string SELECT_SimКарты_Другая_С_Тем_Же_Номером = @"
+SELECT TOP 1 S.КодОборудования -- оборудование дубликата
+FROM vwSIMКарты S
+WHERE S.НомерТелефона = @PhoneNumber
+  AND S.КодОборудования <> @EquipmentId
+  AND EXISTS (SELECT 1 FROM vwОборудование E
+              WHERE E.КодОборудования = S.КодОборудования AND E.Списано IS NULL)";
+
+    /// <summary>Добавление или обновление SIM.</summary>
+    public const string UPDATE_SIMКарты = @"
+IF EXISTS (SELECT 1 FROM vwSIMКарты WHERE КодОборудования = @КодОборудования)
+    UPDATE vwSIMКарты
+    SET НомерТелефона = @НомерТелефона, -- номер телефона
+        От = @От, -- активация UTC
+        КодДоговора = @КодДоговора, -- договор
+        КодЛицаПерсональныхДанных = @КодЛицаПерсональныхДанных, -- лицо ПДн
+        PIN = @PIN, -- PIN
+        PIN2 = @PIN2, -- PIN2
+        PUK = @PUK, -- PUK
+        PUK2 = @PUK2 -- PUK2
+    WHERE КодОборудования = @КодОборудования
+ELSE
+    INSERT vwSIMКарты (
+        КодОборудования, -- оборудование
+        НомерТелефона, -- номер телефона
+        От, -- активация UTC
+        КодДоговора, -- договор
+        КодЛицаПерсональныхДанных, -- лицо ПДн
+        PIN, -- PIN
+        PIN2, -- PIN2
+        PUK, -- PUK
+        PUK2 -- PUK2
+    )
+    VALUES (@КодОборудования, @НомерТелефона, @От, @КодДоговора, @КодЛицаПерсональныхДанных,
+            @PIN, @PIN2, @PUK, @PUK2)";
+
+    /// <summary>Удаление только сведений SIM. Параметр: EquipmentId.</summary>
+    public const string DELETE_ID_SIMКарты = @"
+DELETE vwSIMКарты
+WHERE КодОборудования = @EquipmentId";
+
+    /// <summary>Незавершённые договоры мобильной связи. Параметры: Search, LimitPlusOne.</summary>
+    public const string SELECT_ДоговорыМобильнойСвязи = @"
+SELECT TOP (@LimitPlusOne)
+       КодДокумента, -- идентификатор договора
+       Исполнитель + ' - ' + Заказчик + ISNULL(' №' + NULLIF(НомерДокумента, ''), '') AS ДоговорНазвание, -- название
+       КодЛицаЗаказчика, -- заказчик
+       CASE WHEN EXISTS (SELECT 1 FROM Сотрудники E WHERE E.КодЛица = ДоговорыСвязи.КодЛицаЗаказчика)
+            THEN 2 ELSE 1 END AS ТипЛицаЗаказчика -- тип лица заказчика
+FROM ДоговорыСвязи
+WHERE Сотовая = 1
+  AND РаботаЗавершена = 0
+  AND (@Search = '' OR Исполнитель LIKE '%' + @Search + '%' OR Заказчик LIKE '%' + @Search + '%'
+       OR НомерДокумента LIKE '%' + @Search + '%')
+ORDER BY Исполнитель, Заказчик, НомерДокумента";
+
+    /// <summary>Договор мобильной связи по идентификатору. Параметр: Id.</summary>
+    public const string SELECT_ДоговорМобильнойСвязиПоИдентификатору = @"
+SELECT КодДокумента, -- идентификатор договора
+       Исполнитель + ' - ' + Заказчик + ISNULL(' №' + NULLIF(НомерДокумента, ''), '') AS ДоговорНазвание, -- название
+       КодЛицаЗаказчика, -- заказчик
+       CASE WHEN EXISTS (SELECT 1 FROM Сотрудники E WHERE E.КодЛица = ДоговорыСвязи.КодЛицаЗаказчика)
+            THEN 2 ELSE 1 END AS ТипЛицаЗаказчика -- тип лица заказчика
+FROM ДоговорыСвязи
+WHERE Сотовая = 1
+  AND КодДокумента = @Id";
+
+    /// <summary>Лица ПДн по договору, оборудованию и техническим тарифам.</summary>
+    public const string SELECT_ЛицаПерсональныхДанных = @"
+;WITH ТарифныеПланы(КодТипаДопУслугиСотОператора) AS (
+    SELECT word FROM dbo.fn_SplitText(@TechnicalTariffs)
+),
+Договора(КодДоговора, КодЛицаЗаказчика, Заказчик) AS (
+    SELECT КодДокумента, КодЛицаЗаказчика, Заказчик
+    FROM ДоговорыСвязи
+    WHERE (@ContractId IS NULL OR КодДокумента = @ContractId)
+      AND КодЛицаЗаказчика IS NOT NULL
+),
+СотрудникиНаДолжности(КодЛица, Сотрудник) AS (
+    SELECT E.КодЛица, E.Сотрудник
+    FROM vwДолжности P
+    INNER JOIN Сотрудники E ON P.КодСотрудника = E.КодСотрудника
+    WHERE P.КодЛица IN (SELECT КодЛицаЗаказчика FROM Договора)
+      AND E.КодЛица IS NOT NULL
+)
+SELECT TOP (@LimitPlusOne) T0.КодЛица, T0.Лицо AS Кличка, T0.Компания
+FROM (
+    SELECT КодЛица, Сотрудник AS Лицо, 0 AS Компания FROM СотрудникиНаДолжности
+    UNION
+    SELECT D.КодЛицаЗаказчика, D.Заказчик, 1
+    FROM Договора D
+    WHERE EXISTS (
+        SELECT 1 FROM vwSIMКарты S
+        WHERE (@EquipmentId IS NULL OR S.КодОборудования = @EquipmentId)
+          AND S.КодДоговора = D.КодДоговора
+          AND EXISTS (SELECT 1 FROM SIMКартыДопУслуги U WHERE U.НомерТелефона = S.НомерТелефона)
+          AND EXISTS (SELECT 1 FROM vwОборудование E
+                      WHERE E.КодОборудования = S.КодОборудования AND E.Списано IS NULL)
+    )
+    UNION
+    SELECT КодЛицаЗаказчика, Заказчик, 0 FROM Договора WHERE @CustomerType = 2
+) T0
+WHERE @Search = '' OR T0.Лицо LIKE '%' + @Search + '%'
+ORDER BY T0.Компания DESC, T0.Лицо";
+
+    /// <summary>Лицо ПДн по идентификатору. Параметр: Id.</summary>
+    public const string SELECT_ЛицоПерсональныхДанныхПоИдентификатору = @"
+SELECT P.КодЛица, -- идентификатор лица
+       COALESCE(E.Сотрудник, C.Кличка) AS Кличка -- отображаемое название
+FROM (SELECT @Id AS КодЛица) P
+LEFT JOIN Сотрудники E ON P.КодЛица = E.КодЛица
+LEFT JOIN ЛицаЗаказчики C ON P.КодЛица = C.КодЛица";
+
+    /// <summary>Лицо сотрудника. Параметр: EmployeeId.</summary>
+    public const string SELECT_ЛицоСотрудника = @"
+SELECT КодЛица -- идентификатор лица
+FROM Сотрудники
+WHERE КодСотрудника = @EmployeeId";
 }
