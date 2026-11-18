@@ -170,6 +170,22 @@ internal static class SimServiceColumns
     public const string ТарифныйПлан = "ТарифныйПлан";
 }
 
+internal static class LicenseColumns
+{
+    public const string КодТипаЛицензирования = "КодТипаЛицензирования";
+    public const string ТипЛицензирования = "ТипЛицензирования";
+    public const string Наименование = "Наименование";
+    public const string Временная = "Временная";
+    public const string Перепродажа = "Перепродажа";
+    public const string НомерЛицензиата = "НомерЛицензиата";
+    public const string URLПроверкиЛицензии = "URLПроверкиЛицензии";
+    public const string КоличествоСерверов = "КоличествоСерверов";
+    public const string КоличествоКлиентов = "КоличествоКлиентов";
+    public const string ДействуетОт = "ДействуетОт";
+    public const string ДействуетДо = "ДействуетДо";
+    public const string Дистрибутив = "Дистрибутив";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
