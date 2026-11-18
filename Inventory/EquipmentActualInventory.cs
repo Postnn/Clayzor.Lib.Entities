@@ -21,6 +21,10 @@ public sealed class EquipmentActualInventory
     [Column(ActualInventoryColumns.КодРасположения)]
     public int LocationId { get; set; }
 
+    /// <summary>Полный путь фактического расположения.</summary>
+    [Column(LocationLookupColumns.РасположениеPath1)]
+    public string LocationName { get; set; } = string.Empty;
+
     /// <summary>Признак неремонтопригодности.</summary>
     [Column(ActualInventoryColumns.СломаноРемонтуНеПодлежит)]
     public byte IsBeyondRepair { get; set; }
