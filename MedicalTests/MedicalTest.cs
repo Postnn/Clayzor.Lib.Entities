@@ -120,6 +120,10 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.EquipmentAccounting>();
         RegisterColumnMap<Inventory.EquipmentRouterInfo>();
         RegisterColumnMap<Inventory.EquipmentRouterInventoryItem>();
+        RegisterColumnMap<Inventory.UpsEquipmentLookup>();
+        RegisterColumnMap<Inventory.UpsServerLink>();
+        RegisterColumnMap<Inventory.UpsTest>();
+        RegisterColumnMap<Inventory.EquipmentActualInventory>();
         _initialized = true;
     }
 

@@ -226,6 +226,29 @@ internal static class RouterColumns
     public const string Характеристика = "Характеристика";
 }
 
+internal static class UpsColumns
+{
+    public const string КодОборудованияUPS = "КодОборудованияUPS";
+    public const string КодОборудованияСервера = "КодОборудованияСервера";
+    public const string НастроеноВыключение = "НастроеноВыключение";
+    public const string НазваниеОборудования = "НазваниеОборудования";
+    public const string НазваниеСервера = "НазваниеСервера";
+    public const string КодТестирования = "КодТестирования";
+    public const string ДатаТестирования = "ДатаТестирования";
+    public const string ВремяБатарейUPS = "ВремяБатарейUPS";
+    public const string СервераПолучившиеОповещение = "СервераПолучившиеОповещение";
+    public const string ОшибкиТестирования = "ОшибкиТестирования";
+}
+
+internal static class ActualInventoryColumns
+{
+    public const string ВремяПроверки = "ВремяПроверки";
+    public const string Оборудование = "Оборудование";
+    public const string КодРасположения = "КодРасположения";
+    public const string СломаноРемонтуНеПодлежит = "СломаноРемонтуНеПодлежит";
+    public const string Примечание = "Примечание";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
