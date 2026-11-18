@@ -158,6 +158,18 @@ internal static class SimCardColumns
     public const string ЛицоПерсональныхДанных = "ЛицоПерсональныхДанных";
 }
 
+internal static class SimServiceColumns
+{
+    public const string КодSIMКартыДопУслугиСотОператора = "КодSIMКартыДопУслугиСотОператора";
+    public const string КодТипаДопУслугиСотОператора = "КодТипаДопУслугиСотОператора";
+    public const string ДопУслугаСотОператора = "ДопУслугаСотОператора";
+    public const string СтоимостьВключения = "СтоимостьВключения";
+    public const string СтоимостьВдень = "СтоимостьВдень";
+    public const string СтоимостьВмесяц = "СтоимостьВмесяц";
+    public const string КодОбязательнойУслугиДляКомпании = "КодОбязательнойУслугиДляКомпании";
+    public const string ТарифныйПлан = "ТарифныйПлан";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
