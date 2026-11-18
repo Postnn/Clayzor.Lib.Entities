@@ -40,6 +40,10 @@ public sealed class EquipmentModel : ILookupEntity
     [Column(EquipmentModelColumns.КодТипаПамяти)]
     public int MemoryTypeId { get; set; }
 
+    /// <summary>Название типа памяти.</summary>
+    [Column(MemoryTypeColumns.ТипПамяти)]
+    public string MemoryTypeName { get; set; } = string.Empty;
+
     /// <summary>Количество банков памяти.</summary>
     [Column(EquipmentModelColumns.БанковПамяти)]
     public int MemoryBanks { get; set; }
