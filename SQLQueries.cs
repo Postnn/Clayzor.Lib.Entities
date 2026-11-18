@@ -1299,4 +1299,31 @@ SELECT КодДокумента, -- идентификатор документ�
        ДатаДокумента -- дата
 FROM vwДокументы
 WHERE КодДокумента = @Id";
+
+    /// <summary>Основные сведения маршрутизатора. Параметр: EquipmentId.</summary>
+    public const string SELECT_Routers_КодОборудования = @"
+SELECT КодОборудования, -- оборудование
+       СетевоеИмя, -- сетевое имя
+       ГолосовойШлюз, -- голосовой шлюз
+       OSVersion, -- версия ОС
+       ProcRAM, -- объём RAM
+       ProcRAMfree, -- свободная RAM
+       Flash, -- объём Flash
+       FlashFree, -- свободная Flash
+       BGP, -- номер BGP
+       RouterID, -- идентификатор маршрутизатора
+       Description -- описание конфигурации
+FROM vwRouters
+WHERE КодОборудования = @EquipmentId";
+
+    /// <summary>Инвентаризация маршрутизатора. Параметр: EquipmentId.</summary>
+    public const string SELECT_КодОборудования_RouterInventory = @"
+SELECT Код, -- идентификатор строки
+       КодОборудования, -- оборудование
+       СетевоеИмя, -- сетевое имя
+       Модуль, -- модуль
+       Характеристика -- характеристика
+FROM vwRoutersInventory
+WHERE КодОборудования = @EquipmentId
+ORDER BY Код";
 }

@@ -118,6 +118,8 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.EquipmentSoftwareInstallation>();
         RegisterColumnMap<Inventory.SoftwareEquipmentLookup>();
         RegisterColumnMap<Inventory.EquipmentAccounting>();
+        RegisterColumnMap<Inventory.EquipmentRouterInfo>();
+        RegisterColumnMap<Inventory.EquipmentRouterInventoryItem>();
         _initialized = true;
     }
 

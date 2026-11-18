@@ -209,6 +209,23 @@ internal static class AccountingColumns
     public const string ДатаСписания = "ДатаСписания";
 }
 
+internal static class RouterColumns
+{
+    public const string СетевоеИмя = "СетевоеИмя";
+    public const string ГолосовойШлюз = "ГолосовойШлюз";
+    public const string OSVersion = "OSVersion";
+    public const string ProcRAM = "ProcRAM";
+    public const string ProcRAMfree = "ProcRAMfree";
+    public const string Flash = "Flash";
+    public const string FlashFree = "FlashFree";
+    public const string BGP = "BGP";
+    public const string RouterID = "RouterID";
+    public const string Description = "Description";
+    public const string Код = "Код";
+    public const string Модуль = "Модуль";
+    public const string Характеристика = "Характеристика";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
