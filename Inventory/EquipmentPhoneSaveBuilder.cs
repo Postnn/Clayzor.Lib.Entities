@@ -33,8 +33,11 @@ internal static class EquipmentPhoneSaveBuilder
             sql.AppendLine(string.Format(SQLQueries.DELETE_ОборудованиеТелефона, phoneParameter));
         }
 
+        var originalById = original.ToDictionary(item => item.PhoneId);
         index = 0;
-        foreach (var item in current.Where(item => originalIds.Contains(item.PhoneId)).OrderBy(item => item.PhoneId))
+        foreach (var item in current.Where(item => originalById.TryGetValue(item.PhoneId, out var source) &&
+                     (item.ReturnDate != source.ReturnDate ||
+                      (item.Notes ?? string.Empty) != (source.Notes ?? string.Empty))).OrderBy(item => item.PhoneId))
         {
             var phoneParameter = $"@updPhone{index}";
             var returnParameter = $"@updReturn{index}";
@@ -52,10 +55,14 @@ internal static class EquipmentPhoneSaveBuilder
         {
             var phoneParameter = $"@newPhone{index}";
             var connectionParameter = $"@newConnection{index}";
+            var returnParameter = $"@newReturn{index}";
+            var notesParameter = $"@newNotes{index}";
             parameters.Add(phoneParameter, item.PhoneId, DbType.Int32);
             parameters.Add(connectionParameter, item.ConnectionEquipmentId is 0 ? null : item.ConnectionEquipmentId, DbType.Int32);
+            parameters.Add(returnParameter, item.ReturnDate, DbType.DateTime);
+            parameters.Add(notesParameter, item.Notes ?? string.Empty, DbType.String, size: 300);
             sql.AppendLine(string.Format(SQLQueries.INSERT_ОборудованиеТелефона,
-                phoneParameter, connectionParameter));
+                phoneParameter, connectionParameter, returnParameter, notesParameter));
             index++;
         }
 
