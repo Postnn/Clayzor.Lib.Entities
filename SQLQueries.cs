@@ -1418,4 +1418,23 @@ FROM vwРеальноеРасположениеОборудования A
 LEFT JOIN Сотрудники CH ON A.Изменил = CH.КодСотрудника
 WHERE A.КодОборудования = @EquipmentId
 ORDER BY A.ВремяПроверки DESC";
+
+    /// <summary>Состояние подключения рабочей сети. Параметр: EquipmentId.</summary>
+    public const string SELECT_ID_ConnectedWorkNet = @"
+SELECT Открыто -- счётчик подключений
+FROM vwЛокальнаяСетьПрисоединениеРабочейСети
+WHERE КодОборудования = @EquipmentId
+  AND Открыто <> 0";
+
+    /// <summary>Подключение рабочей сети.</summary>
+    public const string INSERT_Net = @"
+INSERT vwЛокальнаяСетьПрисоединениеРабочейСети (КодОборудования)
+VALUES (@КодОборудования)";
+
+    /// <summary>Отключение рабочей сети.</summary>
+    public const string UPDATE_Net = @"
+UPDATE vwЛокальнаяСетьПрисоединениеРабочейСети
+SET Открыто = 0
+WHERE КодОборудования = @КодОборудования
+  AND Открыто > 0";
 }
