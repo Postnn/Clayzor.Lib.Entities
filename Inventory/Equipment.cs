@@ -58,6 +58,10 @@ public sealed class Equipment
     [Column(EquipmentColumns.Изменено)]
     public DateTime ChangedAtUtc { get; set; }
 
+    /// <summary>ФИО сотрудника, изменившего запись.</summary>
+    [Column(EquipmentPeriodColumns.ИзменилФИО)]
+    public string? ChangedByName { get; set; }
+
     /// <summary>Серийный номер.</summary>
     [Column(EquipmentColumns.SN)]
     public string? SerialNumber { get; set; }
