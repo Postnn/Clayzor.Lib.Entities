@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Data;
+using Clayzor.Lib.DALC;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -44,4 +46,31 @@ public sealed class EquipmentResponsiblePeriod
     /// <summary>Время последнего изменения в UTC.</summary>
     [Column(EquipmentColumns.Изменено)]
     public DateTime ChangedAtUtc { get; set; }
+
+    /// <summary>Добавляет нового ответственного.</summary>
+    public Task InsertAsync(DbManager db) => db.ExecuteAsync(SQLQueries.INSERT_ОборудованиеСотрудников, new
+    {
+        КодОборудования = EquipmentId,
+        От = FromUtc,
+        КодСотрудника = EmployeeId,
+        СрокВозврата = ReturnDate,
+        Примечания = Notes ?? string.Empty,
+    }, commandType: CommandType.Text);
+
+    /// <summary>Обновляет только срок возврата, примечания и окончание существующего периода.</summary>
+    public Task UpdateAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеСотрудников, new
+    {
+        КодОборудования = EquipmentId,
+        От = FromUtc,
+        До = ToUtc,
+        СрокВозврата = ReturnDate,
+        Примечания = Notes ?? string.Empty,
+    }, commandType: CommandType.Text);
+
+    /// <summary>Атомарно закрывает период, добавляет новое расположение и следующего ответственного.</summary>
+    public Task WithdrawAsync(DbManager db, EquipmentResponsiblePeriod? next, EquipmentLocationPeriod? location)
+    {
+        var command = EquipmentResponsibleSaveBuilder.BuildWithdraw(this, next, location);
+        return db.ExecuteAsync(command.Sql, command.Parameters, commandType: CommandType.Text);
+    }
 }
