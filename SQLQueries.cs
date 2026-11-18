@@ -1422,7 +1422,7 @@ DELETE vwПодключенияUPS
 WHERE КодОборудованияUPS = @КодОборудованияUPS
   AND КодОборудованияСервера = @КодОборудованияСервера";
 
-    /// <summary>Оборудование для связи UPS. Параметры: UpsOnly, Search, LimitPlusOne.</summary>
+    /// <summary>Оборудование для связи UPS. Параметры: UpsOnly, LocationId, Search, LimitPlusOne.</summary>
     public const string SELECT_ОборудованиеДляUPS = @"
 SELECT TOP (@LimitPlusOne)
        E.КодОборудования, -- идентификатор оборудования
@@ -1432,6 +1432,24 @@ INNER JOIN МоделиОборудования M ON E.КодМоделиОбо�
 INNER JOIN ТипыОборудования T ON M.КодТипаОборудования = T.КодТипаОборудования
 WHERE E.Списано IS NULL
   AND ((@UpsOnly = 1 AND T.КодТипаОборудования = 53) OR (@UpsOnly = 0 AND T.КодТипаОборудования <> 53))
+  AND (@LocationId IS NULL OR EXISTS (
+       SELECT 1
+       FROM ОборудованиеРасположение ER
+       INNER JOIN vwРасположения ChildLocation ON ChildLocation.КодРасположения = ER.КодРасположения
+       INNER JOIN vwРасположения ParentLocation
+               ON ParentLocation.L <= ChildLocation.L AND ParentLocation.R >= ChildLocation.R
+       WHERE ER.КодОборудования = E.КодОборудования
+         AND NOT EXISTS (
+             SELECT 1 FROM ОборудованиеРасположение Later
+             WHERE Later.КодОборудования = ER.КодОборудования AND Later.От > ER.От)
+         AND ParentLocation.Офис = 1
+         AND ChildLocation.РабочееМесто <> 4
+         AND ParentLocation.КодРасположения IN (
+             SELECT Office.КодРасположения
+             FROM vwРасположения Office
+             INNER JOIN vwРасположения CurrentLocation
+                     ON Office.L <= CurrentLocation.L AND Office.R >= CurrentLocation.R
+             WHERE CurrentLocation.КодРасположения = @LocationId AND Office.Офис = 1)))
   AND (@Search = '' OR T.ТипОборудования LIKE '%' + @Search + '%'
        OR M.МодельОборудования LIKE '%' + @Search + '%' OR E.SN LIKE '%' + @Search + '%')
 ORDER BY T.ТипОборудования, M.МодельОборудования";
