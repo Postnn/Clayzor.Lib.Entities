@@ -105,6 +105,7 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.EquipmentPhoneLink>();
         RegisterColumnMap<Inventory.EquipmentLocationPeriod>();
         RegisterColumnMap<Inventory.EquipmentResponsiblePeriod>();
+        RegisterColumnMap<Inventory.EquipmentAccount>();
         _initialized = true;
     }
 

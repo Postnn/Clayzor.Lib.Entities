@@ -109,6 +109,13 @@ internal static class EquipmentPeriodColumns
     public const string ИзменилФИО = "ИзменилФИО";
 }
 
+internal static class EquipmentAccountColumns
+{
+    public const string Логин = "Логин";
+    public const string Пароль = "Пароль";
+    public const string ОграниченныеПрава = "ОграниченныеПрава";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
