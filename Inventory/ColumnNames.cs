@@ -116,6 +116,30 @@ internal static class EquipmentAccountColumns
     public const string ОграниченныеПрава = "ОграниченныеПрава";
 }
 
+internal static class EquipmentComputerColumns
+{
+    public const string С = "С";
+    public const string RAM = "RAM";
+    public const string RAMDetail = "RAMDetail";
+    public const string HD = "HD";
+    public const string HDDetail = "HDDetail";
+    public const string SSD = "SSD";
+    public const string SSDDetail = "SSDDetail";
+    public const string КодСтандартнойКонфигурации1 = "КодСтандартнойКонфигурации1";
+    public const string ДатаСтандартнойКонфигурации1 = "ДатаСтандартнойКонфигурации1";
+    public const string КодСтандартнойКонфигурации2 = "КодСтандартнойКонфигурации2";
+    public const string ДатаСтандартнойКонфигурации2 = "ДатаСтандартнойКонфигурации2";
+    public const string Лицензия = "Лицензия";
+    public const string Конфигурация1 = "Конфигурация1";
+    public const string Конфигурация2 = "Конфигурация2";
+}
+
+internal static class StandardConfigurationColumns
+{
+    public const string КодСтандартнойКонфигурации = "КодСтандартнойКонфигурации";
+    public const string СтандартнаяКонфигурация = "СтандартнаяКонфигурация";
+}
+
 internal static class PersonLookupColumns
 {
     public const string КодЛица = "КодЛица";
