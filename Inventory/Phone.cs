@@ -66,13 +66,13 @@ public sealed class Phone
     [Column(PhoneColumns.СрокВозврата)]
     public DateTime? ReturnDate { get; set; }
 
-    /// <summary>Услуги связи: 0, 1, 3, 4 или 5.</summary>
+    /// <summary>Услуги связи: 0, 1, 3, 4 или 5; NULL — выбор ещё не сделан.</summary>
     [Column(PhoneColumns.УслугиСвязи)]
-    public int ServicesKind { get; set; }
+    public int? ServicesKind { get; set; }
 
-    /// <summary>Отображение в справочнике: 0, 1, 2, 4, 6 или 8.</summary>
+    /// <summary>Отображение в справочнике: 0, 1, 2, 4, 6 или 8; NULL — выбор ещё не сделан.</summary>
     [Column(PhoneColumns.ВСправочнике)]
-    public int ViewInDirectory { get; set; }
+    public int? ViewInDirectory { get; set; }
 
     /// <summary>Группа перехвата.</summary>
     [Column(PhoneColumns.Группа6)]

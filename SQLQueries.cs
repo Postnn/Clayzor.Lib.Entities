@@ -1655,7 +1655,8 @@ SELECT L.КодОборудования, -- оборудование
                      WHERE X.КодОборудования = L.КодОборудования AND X.КодТелефонногоНомера <> @Id
                      ORDER BY P.ПолныйНомер FOR XML PATH(''), TYPE).value('.', 'varchar(1000)'), 1, 2, ''), '') AS ДругиеНомера -- прочие номера
 FROM ТелефонныеНомераОборудование L
-WHERE L.КодТелефонногоНомера = @Id";
+WHERE L.КодТелефонногоНомера = @Id
+GROUP BY L.КодОборудования";
 
     /// <summary>Добавление члена PBX-группы. Параметры: PhoneId, MemberPhoneId.</summary>
     public const string INSERT_ТелефонЧленГруппы = @"
@@ -1673,17 +1674,21 @@ INSERT INTO ТелефонныеНомераОборудование
     (КодТелефонногоНомера, КодОборудования, КодОборудованияПодключения, СрокВозврата, Примечание)
 VALUES (@PhoneId, @EquipmentId, @ConnectionEquipmentId, @ReturnDate, @Notes) -- связь и её срок возврата";
 
-    /// <summary>Обновление метаданных связи оборудования по подтверждённому первичному ключу. Параметры: PhoneId, EquipmentId, ReturnDate, Notes.</summary>
+    /// <summary>Обновление метаданных связи по составному ключу. Параметры: PhoneId, EquipmentId, ConnectionEquipmentId, ReturnDate, Notes.</summary>
     public const string UPDATE_ТелефонОборудование = @"
 UPDATE ТелефонныеНомераОборудование
 SET СрокВозврата = @ReturnDate, -- новый срок возврата
     Примечание = @Notes -- новое примечание
-WHERE КодТелефонногоНомера = @PhoneId AND КодОборудования = @EquipmentId";
+WHERE КодТелефонногоНомера = @PhoneId AND КодОборудования = @EquipmentId
+  AND ((@ConnectionEquipmentId IS NULL AND NULLIF(КодОборудованияПодключения, 0) IS NULL)
+       OR NULLIF(КодОборудованияПодключения, 0) = @ConnectionEquipmentId) -- точная пара оборудования и подключения";
 
-    /// <summary>Удаление связи оборудования по подтверждённому первичному ключу. Параметры: PhoneId, EquipmentId.</summary>
+    /// <summary>Удаление связи оборудования по составному ключу. Параметры: PhoneId, EquipmentId, ConnectionEquipmentId.</summary>
     public const string DELETE_ТелефонОборудование = @"
 DELETE FROM ТелефонныеНомераОборудование
-WHERE КодТелефонногоНомера = @PhoneId AND КодОборудования = @EquipmentId";
+WHERE КодТелефонногоНомера = @PhoneId AND КодОборудования = @EquipmentId
+  AND ((@ConnectionEquipmentId IS NULL AND NULLIF(КодОборудованияПодключения, 0) IS NULL)
+       OR NULLIF(КодОборудованияПодключения, 0) = @ConnectionEquipmentId) -- точная пара оборудования и подключения";
 
     /// <summary>Добавление параллельного вызова. Параметры: PhoneId, CallNumber, NotUsed, DelayBeforeCall, DelayTooQuickResponse.</summary>
     public const string INSERT_ТелефонПараллельныйВызов = @"
@@ -1951,10 +1956,9 @@ ORDER BY Сотрудник";
 
     /// <summary>Организация сотрудника для подстановки заказчика. Параметр: EmployeeId.</summary>
     public const string SELECT_ТелефонОрганизацияСотрудника = @"
-SELECT TOP 1 КодЛица -- организация сотрудника
-FROM vwДолжности
-WHERE КодСотрудника = @EmployeeId
-ORDER BY КодДолжности DESC";
+SELECT КодЛицаЗаказчика -- организация сотрудника, как Employee.OrganizationId в legacy
+FROM Сотрудники
+WHERE КодСотрудника = @EmployeeId";
 
     /// <summary>Английское имя и транслитерация сотрудника для описания АТС. Параметр: EmployeeId.</summary>
     public const string SELECT_ТелефонОписаниеАТССотрудника = @"
@@ -2011,6 +2015,18 @@ SELECT TOP 1 КодТелефонногоНомера -- существующи�
 FROM vwТелефонныеНомераИзменение
 WHERE КодТелефоннойСтанции = @StationId AND ТелефонныйНомер = @Number AND КодТелефонногоНомера <> @Id";
 
+    /// <summary>Полный номер по авторитетным данным станции и зависимых номеров. Параметры: Number, StationId, DrivenById, DisplayedFromId.</summary>
+    public const string SELECT_ТелефонАвторитетныйПолныйНомер = @"
+SELECT CASE WHEN NULLIF(Displayed.ПолныйНомер, '') IS NOT NULL THEN Displayed.ПолныйНомер
+            WHEN NULLIF(Driven.ПолныйНомер, '') IS NOT NULL THEN Driven.ПолныйНомер
+            ELSE CASE WHEN NULLIF(S.ПрефиксИспользуется, '') IS NOT NULL
+                           AND @Number LIKE REPLACE(S.ПрефиксИспользуется, '%', '') + '%'
+                      THEN S.ПрефиксСтанции ELSE '' END + @Number END -- приоритет отображаемого, ведущего и префикса
+FROM vwТелефонныеСтанции S
+LEFT JOIN vwТелефонныеНомераИзменение Displayed ON Displayed.КодТелефонногоНомера = @DisplayedFromId
+LEFT JOIN vwТелефонныеНомераИзменение Driven ON Driven.КодТелефонногоНомера = @DrivenById
+WHERE S.КодТелефоннойСтанции = @StationId";
+
     /// <summary>Дубликат независимого полного номера. Параметры: Id, FullNumber.</summary>
     public const string SELECT_ТелефонДубликатПолногоНомера = @"
 SELECT COUNT(*) -- число дубликатов
@@ -2049,12 +2065,15 @@ SELECT CASE WHEN EXISTS (
     FROM vwТелефонныеНомераИзменение P
     INNER JOIN DependencyTree D ON P.КодТелефонногоНомера = D.ВедомыйОт OR P.КодТелефонногоНомера = D.ОтображаемыйОт
     WHERE D.Depth < 20)
-SELECT COUNT(*) -- самоссылка, цикл, другая станция или недопустимая зависимость кандидата
-FROM DependencyTree D
-WHERE D.КодТелефонногоНомера = @Id OR D.КодТелефоннойСтанции <> @StationId OR D.Depth >= 20
-   OR D.Depth = 0 AND @DrivenById IS NOT NULL AND D.КодТелефонногоНомера = @DrivenById AND D.ВедомыйОт IS NOT NULL
-   OR D.Depth = 0 AND @DisplayedFromId IS NOT NULL AND D.КодТелефонногоНомера = @DisplayedFromId
-      AND (D.ВедомыйОт IS NOT NULL OR D.ОтображаемыйОт IS NOT NULL)";
+SELECT (SELECT COUNT(*) FROM DependencyTree D
+        WHERE D.КодТелефонногоНомера = @Id OR D.КодТелефоннойСтанции <> @StationId OR D.Depth >= 20
+           OR D.Depth = 0 AND @DrivenById IS NOT NULL AND D.КодТелефонногоНомера = @DrivenById AND D.ВедомыйОт IS NOT NULL
+           OR D.Depth = 0 AND @DisplayedFromId IS NOT NULL AND D.КодТелефонногоНомера = @DisplayedFromId
+              AND (D.ВедомыйОт IS NOT NULL OR D.ОтображаемыйОт IS NOT NULL))
+     + CASE WHEN @DrivenById IS NOT NULL AND NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение WHERE КодТелефонногоНомера = @DrivenById)
+            THEN 1 ELSE 0 END
+     + CASE WHEN @DisplayedFromId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение WHERE КодТелефонногоНомера = @DisplayedFromId)
+            THEN 1 ELSE 0 END -- самоссылка, цикл, другая станция или отсутствующая зависимость";
 
     /// <summary>Предупреждения о работодателях сотрудника. Параметр: EmployeeId.</summary>
     public const string SELECT_ТелефонРаботодателиСотрудника = @"
@@ -2117,10 +2136,60 @@ BEGIN
     INNER JOIN vwРасположения R ON O.L <= R.L AND O.R >= R.R
     WHERE R.КодРасположения = @КодРасположения;
 END;
-DELETE FROM @Лица WHERE КодЛица = @CustomerId;
+IF EXISTS (SELECT 1 FROM @Лица WHERE КодЛица = @CustomerId)
+    DELETE FROM @Лица; -- выбранный заказчик допустим: предупреждение не требуется
 SELECT КодЛица, -- идентификатор допустимого заказчика
        Кличка -- название заказчика
 FROM @Лица ORDER BY Кличка";
+
+    /// <summary>Член группы на другой или отсутствующей станции. Параметры: MemberPhoneId, StationId.</summary>
+    public const string SELECT_ТелефонЧленГруппыНедопустим = @"
+SELECT COUNT(*) -- ноль означает допустимого члена группы
+FROM (SELECT @MemberPhoneId AS КодТелефонногоНомера) M
+LEFT JOIN vwТелефонныеНомераИзменение P ON P.КодТелефонногоНомера = M.КодТелефонногоНомера
+WHERE P.КодТелефонногоНомера IS NULL OR P.КодТелефоннойСтанции <> @StationId";
+
+    /// <summary>Допустимость составной связи оборудования с сохранением существующей. Параметры функции и EquipmentId, ConnectionEquipmentId.</summary>
+    public const string SELECT_ТелефонОборудованиеДопустимо = @"
+SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM dbo.fn_ОборудованиеДляТелНомера(@PhoneTypeId, @StationId, @SocketId, @EmployeeId, @PhoneId) F
+    WHERE F.КодОборудования = @EquipmentId
+      AND ((@ConnectionEquipmentId IS NULL AND NULLIF(F.КодОборудованияПодключения, 0) IS NULL)
+           OR NULLIF(F.КодОборудованияПодключения, 0) = @ConnectionEquipmentId))
+   OR EXISTS (SELECT 1 FROM ТелефонныеНомераОборудование L
+              WHERE L.КодТелефонногоНомера = @PhoneId AND L.КодОборудования = @EquipmentId
+                AND ((@ConnectionEquipmentId IS NULL AND NULLIF(L.КодОборудованияПодключения, 0) IS NULL)
+                     OR NULLIF(L.КодОборудованияПодключения, 0) = @ConnectionEquipmentId))
+   THEN 1 ELSE 0 END -- доступная новая либо уже существующая связь";
+
+    /// <summary>Допустимость розетки в офисе станции с сохранением текущей. Параметры: SocketId, StationId, PhoneId.</summary>
+    public const string SELECT_ТелефонРозеткаДопустимаВОфисе = @"
+SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM vwРозетки S
+    WHERE S.КодРозетки = @SocketId
+      AND (EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодТелефонногоНомера = @PhoneId AND P.КодРозетки = @SocketId)
+           OR (S.Работает = 1
+               AND NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
+               AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)
+               AND EXISTS (SELECT 1 FROM vwТелефонныеСтанции ST
+                           INNER JOIN ОборудованиеРасположение R ON R.КодОборудования = ST.КодОборудования
+                           INNER JOIN vwРасположения L ON L.КодРасположения = R.КодРасположения
+                           INNER JOIN vwРасположения O ON O.Офис = 1 AND L.L >= O.L AND L.R <= O.R
+                           WHERE ST.КодТелефоннойСтанции = @StationId AND L.КодРасположения = S.КодРасположения
+                             AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)))))
+   THEN 1 ELSE 0 END -- текущая либо свободная работающая розетка офиса";
+
+    /// <summary>Допустимость розетки на расположениях чернового оборудования. Параметры: SocketId, PhoneId, LocationIds.</summary>
+    public const string SELECT_ТелефонРозеткаДопустимаОборудования = @"
+SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM vwРозетки S
+    WHERE S.КодРозетки = @SocketId
+      AND (EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодТелефонногоНомера = @PhoneId AND P.КодРозетки = @SocketId)
+           OR (S.Работает = 1
+               AND NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
+               AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)
+               AND S.КодРасположения IN (@LocationIds))))
+   THEN 1 ELSE 0 END -- текущая либо свободная работающая розетка оборудования";
 
     /// <summary>Синхронизация порта Meridian.</summary>
     public const string SP_ТелефонСинхронизацияMeridian = "dbo.sp_Meridian_PortSync";

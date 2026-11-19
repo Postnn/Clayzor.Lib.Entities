@@ -99,7 +99,21 @@ public sealed class PhoneSocketLookup
 }
 
 /// <summary>Типизированный составной ключ связи телефона с оборудованием.</summary>
-public sealed record PhoneEquipmentKey(int EquipmentId, int? ConnectionEquipmentId);
+public sealed record PhoneEquipmentKey
+{
+    /// <summary>Создаёт ключ, нормализуя пустой идентификатор соединения 0 к NULL.</summary>
+    public PhoneEquipmentKey(int equipmentId, int? connectionEquipmentId)
+    {
+        EquipmentId = equipmentId;
+        ConnectionEquipmentId = connectionEquipmentId is > 0 ? connectionEquipmentId : null;
+    }
+
+    /// <summary>Идентификатор оборудования.</summary>
+    public int EquipmentId { get; }
+
+    /// <summary>Идентификатор оборудования подключения либо NULL.</summary>
+    public int? ConnectionEquipmentId { get; }
+}
 
 /// <summary>Оборудование, доступное для связывания с номером.</summary>
 public sealed class PhoneEquipmentLookup
