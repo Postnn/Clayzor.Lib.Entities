@@ -2162,34 +2162,35 @@ SELECT CASE WHEN EXISTS (
                      OR NULLIF(L.КодОборудованияПодключения, 0) = @ConnectionEquipmentId))
    THEN 1 ELSE 0 END -- доступная новая либо уже существующая связь";
 
-    /// <summary>Допустимость розетки в офисе станции с сохранением текущей. Параметры: SocketId, StationId, PhoneId.</summary>
+    /// <summary>Допустимость розетки в дереве офиса станции. Собственная связь освобождается только от проверки занятости. Параметры: SocketId, StationId, PhoneId.</summary>
     public const string SELECT_ТелефонРозеткаДопустимаВОфисе = @"
 SELECT CASE WHEN EXISTS (
     SELECT 1 FROM vwРозетки S
     WHERE S.КодРозетки = @SocketId
+      AND S.Работает = 1
       AND (EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодТелефонногоНомера = @PhoneId AND P.КодРозетки = @SocketId)
-           OR (S.Работает = 1
-               AND NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
-               AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)
-               AND EXISTS (SELECT 1 FROM vwТелефонныеСтанции ST
-                           INNER JOIN ОборудованиеРасположение R ON R.КодОборудования = ST.КодОборудования
-                           INNER JOIN vwРасположения L ON L.КодРасположения = R.КодРасположения
-                           INNER JOIN vwРасположения O ON O.Офис = 1 AND L.L >= O.L AND L.R <= O.R
-                           WHERE ST.КодТелефоннойСтанции = @StationId AND L.КодРасположения = S.КодРасположения
-                             AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)))))
-   THEN 1 ELSE 0 END -- текущая либо свободная работающая розетка офиса";
+           OR (NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
+               AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)))
+      AND EXISTS (SELECT 1 FROM vwТелефонныеСтанции ST
+                  INNER JOIN ОборудованиеРасположение R ON R.КодОборудования = ST.КодОборудования
+                  INNER JOIN vwРасположения SL ON SL.КодРасположения = R.КодРасположения
+                  INNER JOIN vwРасположения O ON O.Офис = 1 AND SL.L >= O.L AND SL.R <= O.R
+                  INNER JOIN vwРасположения L ON L.L >= O.L AND L.R <= O.R
+                  WHERE ST.КодТелефоннойСтанции = @StationId AND L.КодРасположения = S.КодРасположения
+                    AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)))
+   THEN 1 ELSE 0 END -- работающая розетка офиса, свободная либо занятая текущим номером";
 
-    /// <summary>Допустимость розетки на расположениях чернового оборудования. Параметры: SocketId, PhoneId, LocationIds.</summary>
+    /// <summary>Допустимость розетки на расположениях чернового оборудования. Собственная связь освобождается только от проверки занятости. Параметры: SocketId, PhoneId, LocationIds.</summary>
     public const string SELECT_ТелефонРозеткаДопустимаОборудования = @"
 SELECT CASE WHEN EXISTS (
     SELECT 1 FROM vwРозетки S
     WHERE S.КодРозетки = @SocketId
+      AND S.Работает = 1
       AND (EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодТелефонногоНомера = @PhoneId AND P.КодРозетки = @SocketId)
-           OR (S.Работает = 1
-               AND NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
-               AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)
-               AND S.КодРасположения IN (@LocationIds))))
-   THEN 1 ELSE 0 END -- текущая либо свободная работающая розетка оборудования";
+           OR (NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
+               AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)))
+      AND S.КодРасположения IN (@LocationIds))
+   THEN 1 ELSE 0 END -- работающая розетка оборудования, свободная либо занятая текущим номером";
 
     /// <summary>Синхронизация порта Meridian.</summary>
     public const string SP_ТелефонСинхронизацияMeridian = "dbo.sp_Meridian_PortSync";
