@@ -102,6 +102,16 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.LocationLookup>();
         RegisterColumnMap<Inventory.PhonePoolLookup>();
         RegisterColumnMap<Inventory.PhoneNumberLookup>();
+        RegisterColumnMap<Inventory.Phone>();
+        RegisterColumnMap<Inventory.PhoneTypeLookup>();
+        RegisterColumnMap<Inventory.PhoneStationLookup>();
+        RegisterColumnMap<Inventory.PhoneDirectoryItem>();
+        RegisterColumnMap<Inventory.PhoneSocketLookup>();
+        RegisterColumnMap<Inventory.PhoneEquipmentLookup>();
+        RegisterColumnMap<Inventory.PhoneEquipmentLink>();
+        RegisterColumnMap<Inventory.PhoneGroupMember>();
+        RegisterColumnMap<Inventory.PhoneGroupMembership>();
+        RegisterColumnMap<Inventory.PhoneParallelCall>();
         RegisterColumnMap<Inventory.EquipmentPhoneLink>();
         RegisterColumnMap<Inventory.EquipmentLocationPeriod>();
         RegisterColumnMap<Inventory.EquipmentResponsiblePeriod>();
