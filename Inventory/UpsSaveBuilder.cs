@@ -13,6 +13,10 @@ internal static class UpsSaveBuilder
         IReadOnlyCollection<UpsTest> originalTests,
         IReadOnlyCollection<UpsTest> currentTests)
     {
+        if (currentServers.GroupBy(item => item.ServerEquipmentId).Any(group => group.Count() > 1))
+            throw new InvalidOperationException("В списке серверов UPS есть дубликат идентификатора.");
+        if (currentTests.GroupBy(item => item.Id).Any(group => group.Count() > 1))
+            throw new InvalidOperationException("В списке тестов UPS есть дубликат идентификатора.");
         var parameters = new DynamicParameters();
         var sql = new StringBuilder();
         sql.AppendLine("SET NOCOUNT ON;");
@@ -30,7 +34,9 @@ internal static class UpsSaveBuilder
         }
         var originalById = originalServers.ToDictionary(item => item.ServerEquipmentId);
         index = 0;
-        foreach (var updated in currentServers.Where(item => originalById.ContainsKey(item.ServerEquipmentId)))
+        foreach (var updated in currentServers.Where(item =>
+                     originalById.TryGetValue(item.ServerEquipmentId, out var original) &&
+                     original.TurnOffConfigured != item.TurnOffConfigured))
         {
             parameters.Add($"@srvUpd{index}Ups", upsEquipmentId, DbType.Int32);
             parameters.Add($"@srvUpd{index}Server", updated.ServerEquipmentId, DbType.Int32);
@@ -49,7 +55,11 @@ internal static class UpsSaveBuilder
         }
         var originalTestsById = originalTests.ToDictionary(item => item.Id);
         index = 0;
-        foreach (var updated in currentTests.Where(item => originalTestsById.ContainsKey(item.Id)))
+        foreach (var updated in currentTests.Where(item =>
+                     originalTestsById.TryGetValue(item.Id, out var original) &&
+                     (original.TestedAt != item.TestedAt || original.BatteryTime != item.BatteryTime ||
+                      !string.Equals(original.Servers, item.Servers, StringComparison.Ordinal) ||
+                      !string.Equals(original.Issues, item.Issues, StringComparison.Ordinal))))
         {
             AddTestParameters(parameters, $"testUpd{index}", upsEquipmentId, updated);
             parameters.Add($"@testUpd{index}Id", updated.Id, DbType.Int32);

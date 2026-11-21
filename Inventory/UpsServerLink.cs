@@ -23,6 +23,10 @@ public sealed class UpsServerLink
     [Column(UpsColumns.НазваниеСервера)]
     public string ServerName { get; set; } = string.Empty;
 
+    /// <summary>Тип оборудования сервера; выбирать уведомления могут только компьютеры.</summary>
+    [Column(EquipmentTypeColumns.КодТипаОборудования)]
+    public int EquipmentTypeId { get; set; }
+
     /// <summary>Название связанного оборудования.</summary>
     [Column(UpsColumns.НазваниеОборудования)]
     public string EquipmentName { get; set; } = string.Empty;
