@@ -113,4 +113,22 @@ public sealed class EquipmentAccounting
             Примечания = Notes ?? string.Empty,
         }, commandType: CommandType.Text);
     }
+
+    /// <summary>Атомарно удаляет подтверждённую запись, если она всё ещё последняя и доступна текущему пользователю.</summary>
+    public static async Task DeleteLatestAsync(DbManager db, int equipmentId, int accountingId)
+    {
+        var status = await db.ExecuteScalarAsync<int>(SQLQueries.DELETE_КодОборудования_ОборудованиеБухУчета, new
+        {
+            КодОборудования = equipmentId,
+            КодОборудованияБухУчета = accountingId,
+            RoleIdPrimary = 66,
+            RoleIdSecondary = 68,
+        }, commandType: CommandType.Text);
+        if (status == 1)
+            throw new InvalidOperationException("Запись бухгалтерского учёта уже удалена. Обновите данные.");
+        if (status == 2)
+            throw new InvalidOperationException("История бухгалтерского учёта изменилась. Обновите данные перед удалением.");
+        if (status == 3)
+            throw new UnauthorizedAccessException("Недостаточно прав для удаления бухгалтерского учёта.");
+    }
 }

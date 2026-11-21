@@ -31,17 +31,22 @@ public sealed class UpsServerLink
     [Column(UpsColumns.НазваниеОборудования)]
     public string EquipmentName { get; set; } = string.Empty;
 
-    /// <summary>Сохраняет diff серверов и тестов одной транзакцией.</summary>
-    public static Task SaveDetailsAsync(
+    /// <summary>Проверяет актуальные права и сохраняет diff серверов и тестов одной транзакцией.</summary>
+    public static async Task SaveDetailsAsync(
         DbManager db,
         int upsEquipmentId,
+        int sourceServerEquipmentId,
         IReadOnlyCollection<UpsServerLink> originalServers,
         IReadOnlyCollection<UpsServerLink> currentServers,
         IReadOnlyCollection<UpsTest> originalTests,
         IReadOnlyCollection<UpsTest> currentTests)
     {
         var command = UpsSaveBuilder.Build(
-            upsEquipmentId, originalServers, currentServers, originalTests, currentTests);
-        return db.ExecuteAsync(command.Sql, command.Parameters, commandType: CommandType.Text);
+            upsEquipmentId, sourceServerEquipmentId, originalServers, currentServers, originalTests, currentTests);
+        var status = await db.ExecuteScalarAsync<int>(command.Sql, command.Parameters, commandType: CommandType.Text);
+        if (status == 1 || status == 3)
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения подключений UPS.");
+        if (status == 2)
+            throw new InvalidOperationException("Подключение UPS изменилось. Обновите данные и повторите операцию.");
     }
 }

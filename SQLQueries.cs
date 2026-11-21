@@ -1298,14 +1298,43 @@ SET КодОборудования = @КодОборудования, -- обо�
     Примечания = @Примечания -- примечания
 WHERE КодОборудованияБухУчета = @КодОборудованияБухУчета";
 
-    /// <summary>Удаление только последней записи бухгалтерского учёта оборудования.</summary>
+    /// <summary>Атомарно удаляет подтверждённую последнюю запись бухучёта после проверки актуального владельца и ролей.</summary>
     public const string DELETE_КодОборудования_ОборудованиеБухУчета = @"
-DELETE ОборудованиеБухУчета
-WHERE КодОборудованияБухУчета IN (
-    SELECT TOP 1 КодОборудованияБухУчета
-    FROM ОборудованиеБухУчета
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @LatestId int = NULL; -- актуальный идентификатор последней записи
+    DECLARE @ActualOwnerId int = NULL; -- актуальный владелец последней записи
+    SELECT TOP 1
+           @LatestId = КодОборудованияБухУчета, -- идентификатор записи
+           @ActualOwnerId = КодЛица -- бухгалтерия-владелец
+    FROM ОборудованиеБухУчета WITH (UPDLOCK, HOLDLOCK)
     WHERE КодОборудования = @КодОборудования
-    ORDER BY От DESC)";
+    ORDER BY От DESC, КодОборудованияБухУчета DESC;
+    IF @LatestId IS NULL
+    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- история пуста
+    IF @LatestId <> @КодОборудованияБухУчета
+    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- подтверждённая запись устарела
+    IF @ActualOwnerId IS NULL OR dbo.fn_БухгалтерскийУчет(@ActualOwnerId) <> 1
+       OR NOT EXISTS (SELECT 1 FROM fn_ТекущиеРоли()
+                      WHERE КодРоли IN (@RoleIdPrimary, @RoleIdSecondary)
+                        AND КодЛица IN (0, @ActualOwnerId))
+    BEGIN ROLLBACK TRANSACTION; SELECT 3; RETURN; END; -- нет права у актуального владельца
+    DELETE ОборудованиеБухУчета
+    WHERE КодОборудованияБухУчета = @LatestId
+      AND КодОборудования = @КодОборудования;
+    COMMIT TRANSACTION;
+    SELECT 0; -- запись удалена
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
+    DECLARE @ErrorState int = ERROR_STATE();
+    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
+END CATCH;";
 
     /// <summary>Лица с бухгалтерским учётом. Параметры: Search, LimitPlusOne.</summary>
     public const string SELECT_ЛицаСБухгалтерскимУчетом = @"
@@ -1451,7 +1480,9 @@ WHERE КодОборудованияUPS = @КодОборудованияUPS
     public const string SELECT_ОборудованиеДляUPS = @"
 SELECT TOP (@LimitPlusOne)
        E.КодОборудования, -- идентификатор оборудования
-       T.ТипОборудования + ' ' + M.МодельОборудования + ISNULL(' (' + NULLIF(E.SN, '') + ')', '') AS НазваниеОборудования -- название
+       T.ТипОборудования + ' ' + M.МодельОборудования + ISNULL(' (' + NULLIF(E.SN, '') + ')', '') AS НазваниеОборудования, -- название
+       T.КодТипаОборудования, -- тип оборудования
+       E.СетевоеИмя AS НазваниеСервера -- сетевое имя сервера
 FROM vwОборудование E
 INNER JOIN МоделиОборудования M ON E.КодМоделиОборудования = M.КодМоделиОборудования
 INNER JOIN ТипыОборудования T ON M.КодТипаОборудования = T.КодТипаОборудования
@@ -1482,7 +1513,9 @@ ORDER BY T.ТипОборудования, M.МодельОборудовани�
     /// <summary>Оборудование для связи UPS по идентификатору. Параметр: Id.</summary>
     public const string SELECT_ОборудованиеДляUPSПоИдентификатору = @"
 SELECT E.КодОборудования, -- идентификатор оборудования
-       T.ТипОборудования + ' ' + M.МодельОборудования + ISNULL(' (' + NULLIF(E.SN, '') + ')', '') AS НазваниеОборудования -- название
+       T.ТипОборудования + ' ' + M.МодельОборудования + ISNULL(' (' + NULLIF(E.SN, '') + ')', '') AS НазваниеОборудования, -- название
+       T.КодТипаОборудования, -- тип оборудования
+       E.СетевоеИмя AS НазваниеСервера -- сетевое имя сервера
 FROM vwОборудование E
 INNER JOIN МоделиОборудования M ON E.КодМоделиОборудования = M.КодМоделиОборудования
 INNER JOIN ТипыОборудования T ON M.КодТипаОборудования = T.КодТипаОборудования

@@ -12,4 +12,12 @@ public sealed class UpsEquipmentLookup : ILookupEntity
     /// <summary>Отображаемое название.</summary>
     [Column(UpsColumns.НазваниеОборудования)]
     public string Name { get; set; } = string.Empty;
+
+    /// <summary>Тип оборудования.</summary>
+    [Column(EquipmentTypeColumns.КодТипаОборудования)]
+    public int EquipmentTypeId { get; set; }
+
+    /// <summary>Сетевое имя сервера.</summary>
+    [Column(UpsColumns.НазваниеСервера)]
+    public string ServerName { get; set; } = string.Empty;
 }
