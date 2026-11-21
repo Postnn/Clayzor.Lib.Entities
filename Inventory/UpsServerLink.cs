@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations.Schema;
-using System.Data;
 using Clayzor.Lib.DALC;
 
 namespace Clayzor.Lib.Entities.Inventory;
@@ -43,10 +42,13 @@ public sealed class UpsServerLink
     {
         var command = UpsSaveBuilder.Build(
             upsEquipmentId, sourceServerEquipmentId, originalServers, currentServers, originalTests, currentTests);
-        var status = await db.ExecuteScalarAsync<int>(command.Sql, command.Parameters, commandType: CommandType.Text);
+        var status = await db.ExecuteWriteScalarAsync<int?>(command.Sql, command.Parameters);
+        if (status == 0)
+            return;
         if (status == 1 || status == 3)
             throw new UnauthorizedAccessException("Недостаточно прав для изменения подключений UPS.");
         if (status == 2)
             throw new InvalidOperationException("Подключение UPS изменилось. Обновите данные и повторите операцию.");
+        throw new InvalidOperationException("Не получен корректный результат сохранения подключения UPS. Обновите данные и проверьте состояние записи.");
     }
 }
