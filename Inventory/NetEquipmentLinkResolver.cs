@@ -60,7 +60,7 @@ public static class NetEquipmentLinkResolver
             for (var index = 0; index < batch.Count; index++)
             {
                 var name = $"@Token{offset + index}";
-                parameters.Add(name, batch[index], DbType.String, size: 50);
+                parameters.Add(name, batch[index], DbType.String, size: batch[index].Length);
                 if (sources.Length > 0)
                     sources.Append(" UNION ALL ");
                 sources.Append("SELECT ").Append(name).Append(" AS Token");

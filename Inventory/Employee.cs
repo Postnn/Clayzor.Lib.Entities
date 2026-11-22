@@ -25,6 +25,10 @@ public sealed class Employee : ILookupEntity
     [Column(EmployeeColumns.КодЛицаЗаказчика)]
     public int? OrganizationId { get; set; }
 
+    /// <summary>Название организации сотрудника.</summary>
+    [Column(EmployeeColumns.Организация)]
+    public string OrganizationName { get; set; } = string.Empty;
+
     /// <summary>Получает текущего сотрудника только при совпадении серверного Windows principal и SQL principal.</summary>
     public static async Task<Employee?> GetCurrentAsync(
         DbManager db,

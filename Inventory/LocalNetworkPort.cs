@@ -149,8 +149,8 @@ public sealed class LocalNetworkPort
             PersonCustomerId = draft.PersonCustomerId,
             EmployeeId = draft.EmployeeId,
             SocketId = draft.SocketId,
-            Connected = draft.Connected.Trim(),
-            Description = draft.Description.Trim(),
+            Connected = draft.Connected?.Trim() ?? string.Empty,
+            Description = draft.Description?.Trim() ?? string.Empty,
             ReturnDate = draft.ReturnDate?.Date,
         });
         if (status == 0)

@@ -56,6 +56,7 @@ internal static class EmployeeColumns
     public const string Сотрудник = "Сотрудник";
     public const string Employee = "Employee";
     public const string КодЛицаЗаказчика = "КодЛицаЗаказчика";
+    public const string Организация = "Организация";
 }
 
 internal static class EquipmentColumns

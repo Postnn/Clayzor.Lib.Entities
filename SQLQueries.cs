@@ -347,12 +347,14 @@ ORDER BY Сотрудник";
     /// Сотрудник по идентификатору. Параметр: Id.
     /// </summary>
     public const string SELECT_СотрудникПоИдентификатору = @"
-SELECT КодСотрудника,  -- идентификатор сотрудника
-       Сотрудник,      -- отображаемое имя
-       Employee,       -- имя на английском языке
-       КодЛицаЗаказчика -- организация сотрудника
-FROM Сотрудники
-WHERE КодСотрудника = @Id";
+SELECT S.КодСотрудника,  -- идентификатор сотрудника
+       S.Сотрудник,      -- отображаемое имя
+       S.Employee,       -- имя на английском языке
+       S.КодЛицаЗаказчика, -- организация сотрудника
+       ISNULL(O.Кличка, '') AS Организация -- название организации сотрудника
+FROM Сотрудники S
+LEFT JOIN ЛицаЗаказчики O ON O.КодЛица = S.КодЛицаЗаказчика
+WHERE S.КодСотрудника = @Id";
 
     /// <summary>Текущий сотрудник при совпадении Windows и SQL principal. Параметр: WindowsPrincipal.</summary>
     public const string SELECT_ТекущийСотрудникПоPrincipal = @"
@@ -2332,12 +2334,17 @@ ORDER BY СетевоеИмя, Порт";
 
     /// <summary>Ближайший офис последней записи расположения оборудования. Параметр: КодОборудования.</summary>
     public const string SELECT_ОфисПоКодуОборудования = @"
-SELECT TOP 1 O.КодРасположения -- офис
-FROM ОборудованиеРасположение ER
-INNER JOIN vwРасположения L ON ER.КодРасположения = L.КодРасположения
+DECLARE @LatestLocationId int;
+SELECT TOP 1 @LatestLocationId = КодРасположения -- последнее расположение без предположения об офисе
+FROM ОборудованиеРасположение
+WHERE КодОборудования = @КодОборудования
+ORDER BY От DESC;
+
+SELECT TOP 1 O.КодРасположения -- ближайший офисный предок только последнего расположения
+FROM vwРасположения L
 INNER JOIN vwРасположения O ON O.Офис <> 0 AND O.L <= L.L AND O.R >= L.R
-WHERE ER.КодОборудования = @КодОборудования
-ORDER BY ER.От DESC, O.L DESC";
+WHERE L.КодРасположения = @LatestLocationId
+ORDER BY O.L DESC";
 
     /// <summary>Работает и свободна либо является текущей розеткой порта. Параметры: CurrentSocketId, OfficeLocationId, Search, LimitPlusOne.</summary>
     public const string SELECT_РозеткиДляСети = @"
