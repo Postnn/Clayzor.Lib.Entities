@@ -55,6 +55,7 @@ internal static class EmployeeColumns
     public const string КодСотрудника = "КодСотрудника";
     public const string Сотрудник = "Сотрудник";
     public const string Employee = "Employee";
+    public const string КодЛицаЗаказчика = "КодЛицаЗаказчика";
 }
 
 internal static class EquipmentColumns
@@ -308,4 +309,30 @@ internal static class LocationLookupColumns
 {
     public const string КодРасположения = "КодРасположения";
     public const string РасположениеPath1 = "РасположениеPath1";
+}
+
+internal static class LocalNetworkPortColumns
+{
+    public const string КодЛокальнойСети = "КодЛокальнойСети";
+    public const string КодОборудования = "КодОборудования";
+    public const string Порт = "Порт";
+    public const string PoE = "PoE";
+    public const string КодРозетки = "КодРозетки";
+    public const string КодЛицаЗаказчика = "КодЛицаЗаказчика";
+    public const string КодСотрудника = "КодСотрудника";
+    public const string Подключено = "Подключено";
+    public const string Примечания = "Примечания";
+    public const string СрокВозврата = "СрокВозврата";
+    public const string Изменил = "Изменил";
+    public const string Изменено = "Изменено";
+    public const string Строка = "Строка";
+}
+
+internal static class NetSocketColumns
+{
+    public const string КодРозетки = "КодРозетки";
+    public const string КодРасположения = "КодРасположения";
+    public const string Розетка = "Розетка";
+    public const string Работает = "Работает";
+    public const string Примечание = "Примечание";
 }

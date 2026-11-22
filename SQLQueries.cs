@@ -349,9 +349,19 @@ ORDER BY Сотрудник";
     public const string SELECT_СотрудникПоИдентификатору = @"
 SELECT КодСотрудника,  -- идентификатор сотрудника
        Сотрудник,      -- отображаемое имя
-       Employee        -- имя на английском языке
+       Employee,       -- имя на английском языке
+       КодЛицаЗаказчика -- организация сотрудника
 FROM Сотрудники
 WHERE КодСотрудника = @Id";
+
+    /// <summary>Текущий сотрудник при совпадении Windows и SQL principal. Параметр: WindowsPrincipal.</summary>
+    public const string SELECT_ТекущийСотрудникПоPrincipal = @"
+SELECT КодСотрудника, -- идентификатор сотрудника
+       Сотрудник, -- отображаемое имя
+       Employee, -- английское имя
+       КодЛицаЗаказчика -- организация
+FROM Сотрудники
+WHERE SID = SUSER_SID() AND @WindowsPrincipal = SUSER_SNAME()";
 
     /// <summary>
     /// Базовый запрос сотрудников для серверного поиска, сортировки и пагинации ClayGrid.
@@ -1544,6 +1554,20 @@ FROM vwЛокальнаяСетьПрисоединениеРабочейСет�
 WHERE КодОборудования = @EquipmentId
   AND Открыто <> 0";
 
+    /// <summary>Порты локальной сети, в тексте «Подключено» которых встречается сетевое имя. Параметр: СетевоеИмя.</summary>
+    public const string SELECT_NAME_vwЛокальнаяСеть = @"
+IF CHARINDEX('\', @СетевоеИмя) > 0
+    SET @СетевоеИмя = REVERSE(SUBSTRING(REVERSE(@СетевоеИмя), 1, CHARINDEX('\', REVERSE(@СетевоеИмя)) - 1));
+
+SELECT N.КодЛокальнойСети, -- идентификатор порта
+       E.СетевоеИмя, -- сетевое имя оборудования порта
+       N.Порт -- номер порта
+FROM vwЛокальнаяСеть N
+INNER JOIN vwОборудование E ON N.КодОборудования = E.КодОборудования
+WHERE (' ' + dbo.fn_SplitWords(N.Подключено) + ' ') LIKE '% ' + @СетевоеИмя + ' %'
+   OR (' ' + N.Подключено + ' ') LIKE '% ' + @СетевоеИмя + ' %'
+ORDER BY E.СетевоеИмя, N.Порт";
+
     /// <summary>Подключение рабочей сети.</summary>
     public const string INSERT_Net = @"
 INSERT vwЛокальнаяСетьПрисоединениеРабочейСети (КодОборудования)
@@ -2251,4 +2275,224 @@ SELECT КодЗапроса,       -- стабильный идентифика�
        ФормаОтчета       -- @ключ формы контекстного отчёта
 FROM Запросы
 WHERE КодЗапроса = @Id";
+
+    /// <summary>Пакетный resolver токенов порта. {0} — параметризованные SELECT Token через UNION ALL; TOP 1 без ORDER BY сохраняет legacy.</summary>
+    public const string SELECT_Оборудование_СсылкиПоТокенам = @"
+SELECT T.Token, R.КодОборудования
+FROM ({0}) T
+CROSS APPLY (
+    SELECT TOP 1 КодОборудования -- идентификатор оборудования
+    FROM vwОборудование
+    WHERE СетевоеИмя = T.Token -- точное сетевое имя
+       OR (CHARINDEX('\', СетевоеИмя) > 0 AND СетевоеИмя LIKE '%\' + T.Token) -- доменный суффикс
+       OR MACадрес = T.Token -- основной MAC
+       OR MACадрес2 = T.Token -- второй MAC
+       OR MACадресILO = T.Token -- MAC ILO
+) R";
+
+    /// <summary>Существующий порт локальной сети. Параметр: Id.</summary>
+    public const string SELECT_ID_ЛокальнаяСеть = @"
+SELECT N.КодЛокальнойСети, -- идентификатор порта
+       N.КодОборудования, -- оборудование
+       N.Порт, -- номер порта
+       N.PoE, -- поддержка PoE
+       N.КодРозетки, -- розетка
+       N.КодЛицаЗаказчика, -- заказчик
+       N.КодСотрудника, -- сотрудник
+       N.Подключено, -- исходный текст подключения
+       N.Примечания, -- исходное примечание
+       N.СрокВозврата, -- календарный срок возврата
+       N.Изменил, -- сотрудник изменения
+       ISNULL(CH.Сотрудник, '') AS Сотрудник, -- имя изменившего
+       N.Изменено -- время изменения UTC
+FROM vwЛокальнаяСеть N
+LEFT JOIN Сотрудники CH ON N.Изменил = CH.КодСотрудника
+WHERE N.КодЛокальнойСети = @Id";
+
+    /// <summary>Сетевое имя оборудования. Параметр: EquipmentId.</summary>
+    public const string SELECT_СетевоеИмяОборудованияПоИдентификатору = @"
+SELECT СетевоеИмя -- сетевое имя
+FROM vwОборудование
+WHERE КодОборудования = @EquipmentId";
+
+    /// <summary>Свободные соседние порты. Параметр: КодЛокальнойСети.</summary>
+    public const string SELECT_СоседниеПортыНеЗанятые = @"
+SELECT КодЛокальнойСети, -- идентификатор порта
+       СетевоеИмя + ', порт:' + CONVERT(varchar, Порт) AS Строка -- legacy-подпись
+FROM dbo.fn_ЛокальнаяСеть_СоседниеПорты(@КодЛокальнойСети) X
+WHERE Занят = 0
+ORDER BY СетевоеИмя, Порт";
+
+    /// <summary>Все соседние порты. Параметр: КодЛокальнойСети.</summary>
+    public const string SELECT_СоседниеПортыВсе = @"
+SELECT КодЛокальнойСети, -- идентификатор порта
+       СетевоеИмя + ', порт:' + CONVERT(varchar, Порт) AS Строка -- legacy-подпись
+FROM dbo.fn_ЛокальнаяСеть_СоседниеПорты(@КодЛокальнойСети) X
+ORDER BY СетевоеИмя, Порт";
+
+    /// <summary>Ближайший офис последней записи расположения оборудования. Параметр: КодОборудования.</summary>
+    public const string SELECT_ОфисПоКодуОборудования = @"
+SELECT TOP 1 O.КодРасположения -- офис
+FROM ОборудованиеРасположение ER
+INNER JOIN vwРасположения L ON ER.КодРасположения = L.КодРасположения
+INNER JOIN vwРасположения O ON O.Офис <> 0 AND O.L <= L.L AND O.R >= L.R
+WHERE ER.КодОборудования = @КодОборудования
+ORDER BY ER.От DESC, O.L DESC";
+
+    /// <summary>Работает и свободна либо является текущей розеткой порта. Параметры: CurrentSocketId, OfficeLocationId, Search, LimitPlusOne.</summary>
+    public const string SELECT_РозеткиДляСети = @"
+SELECT TOP (@LimitPlusOne)
+       S.КодРозетки, -- идентификатор
+       S.Розетка, -- название
+       S.Примечание, -- примечание
+       S.КодРасположения, -- расположение
+       S.Работает -- работает
+FROM vwРозетки S
+WHERE S.Работает = 1
+  AND (S.КодРозетки = @CurrentSocketId
+       OR (NOT EXISTS (SELECT 1 FROM vwТелефонныеНомераИзменение P WHERE P.КодРозетки = S.КодРозетки)
+           AND NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть N WHERE N.КодРозетки = S.КодРозетки)))
+  AND (@OfficeLocationId IS NULL OR EXISTS (
+       SELECT 1 FROM vwРасположения Parent
+       INNER JOIN vwРасположения Child ON Parent.L <= Child.L AND Parent.R >= Child.R
+       WHERE Parent.КодРасположения = @OfficeLocationId AND Child.КодРасположения = S.КодРасположения))
+  AND (@Search = '' OR S.Розетка LIKE '%' + @Search + '%')
+ORDER BY S.Розетка";
+
+    /// <summary>Розетка по ID без ограничения занятостью для восстановления текущего значения. Параметр: Id.</summary>
+    public const string SELECT_РозеткаДляСетиПоИдентификатору = @"
+SELECT КодРозетки, -- идентификатор
+       Розетка, -- название
+       Примечание, -- примечание
+       КодРасположения, -- расположение
+       Работает -- работает
+FROM vwРозетки
+WHERE КодРозетки = @Id";
+
+    /// <summary>Обычное атомарное обновление порта с защитой от устаревшей записи.</summary>
+    public const string UPDATE_ЛокальнаяСеть = @"
+SET NOCOUNT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @SourceChanged datetime;
+    SELECT @SourceChanged = Изменено
+    FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодЛокальнойСети = @Id;
+    IF @SourceChanged IS NULL OR @SourceChanged <> @ExpectedChangedAt
+    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- запись недоступна или устарела
+    IF NOT EXISTS (SELECT 1 FROM ЛицаЗаказчики WHERE КодЛица = @PersonCustomerId)
+    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- заказчик не существует
+    UPDATE vwЛокальнаяСеть
+    SET КодРозетки = @SocketId,
+        КодЛицаЗаказчика = @PersonCustomerId,
+        КодСотрудника = @EmployeeId,
+        Подключено = @Connected,
+        Примечания = @Description,
+        СрокВозврата = @ReturnDate
+    WHERE КодЛокальнойСети = @Id;
+    COMMIT TRANSACTION;
+    SELECT 0; -- успех
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
+    DECLARE @ErrorState int = ERROR_STATE();
+    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
+END CATCH;";
+
+    /// <summary>Атомарное переключение на свободный соседний порт; сроки возврата обеих записей не меняются.</summary>
+    public const string SWITCH_ЛокальнаяСеть = @"
+SET NOCOUNT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @SourceChanged datetime;
+    DECLARE @TargetFree bit;
+    SELECT @SourceChanged = Изменено
+    FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодЛокальнойСети = @Id;
+    SELECT @TargetFree = CASE WHEN КодРозетки IS NULL AND КодСотрудника IS NULL AND Подключено = '' THEN 1 ELSE 0 END
+    FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодЛокальнойСети = @TargetId;
+    IF @SourceChanged IS NULL OR @SourceChanged <> @ExpectedChangedAt
+    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- источник недоступен или устарел
+    IF NOT EXISTS (SELECT 1 FROM ЛицаЗаказчики WHERE КодЛица = @PersonCustomerId)
+    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- заказчик не существует
+    IF @TargetFree <> 1 OR @TargetId = @Id OR NOT EXISTS (
+        SELECT 1 FROM dbo.fn_ЛокальнаяСеть_СоседниеПорты(@Id) WHERE КодЛокальнойСети = @TargetId)
+    BEGIN ROLLBACK TRANSACTION; SELECT 3; RETURN; END; -- цель не является свободным соседним портом
+    UPDATE vwЛокальнаяСеть
+    SET КодЛицаЗаказчика = @PersonCustomerId, Примечания = '', Подключено = '', КодСотрудника = NULL, КодРозетки = NULL
+    WHERE КодЛокальнойСети = @Id;
+    UPDATE vwЛокальнаяСеть
+    SET КодЛицаЗаказчика = @PersonCustomerId, Примечания = @Description, Подключено = @Connected,
+        КодСотрудника = @EmployeeId, КодРозетки = @SocketId
+    WHERE КодЛокальнойСети = @TargetId;
+    COMMIT TRANSACTION;
+    SELECT 0; -- успех
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
+    DECLARE @ErrorState int = ERROR_STATE();
+    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
+END CATCH;";
+
+    /// <summary>Атомарный обмен двух соседних портов с временным освобождением розетки источника; сроки возврата не меняются.</summary>
+    public const string EXCHANGE_ЛокальнаяСеть = @"
+SET NOCOUNT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DECLARE @SourceChanged datetime;
+    DECLARE @TargetCustomerId int;
+    DECLARE @TargetDescription varchar(max);
+    DECLARE @TargetConnected varchar(max);
+    DECLARE @TargetEmployeeId int;
+    DECLARE @TargetSocketId int;
+    SELECT @SourceChanged = Изменено
+    FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодЛокальнойСети = @Id;
+    SELECT @TargetCustomerId = КодЛицаЗаказчика,
+           @TargetDescription = Примечания,
+           @TargetConnected = Подключено,
+           @TargetEmployeeId = КодСотрудника,
+           @TargetSocketId = КодРозетки
+    FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодЛокальнойСети = @TargetId;
+    IF @SourceChanged IS NULL OR @SourceChanged <> @ExpectedChangedAt
+    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- источник недоступен или устарел
+    IF NOT EXISTS (SELECT 1 FROM ЛицаЗаказчики WHERE КодЛица = @PersonCustomerId)
+    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- заказчик не существует
+    IF @TargetCustomerId IS NULL OR @TargetId = @Id OR NOT EXISTS (
+        SELECT 1 FROM dbo.fn_ЛокальнаяСеть_СоседниеПорты(@Id) WHERE КодЛокальнойСети = @TargetId)
+    BEGIN ROLLBACK TRANSACTION; SELECT 3; RETURN; END; -- цель не является соседним портом
+    UPDATE vwЛокальнаяСеть
+    SET КодЛицаЗаказчика = @TargetCustomerId, Примечания = @TargetDescription, Подключено = @TargetConnected,
+        КодСотрудника = @TargetEmployeeId, КодРозетки = NULL
+    WHERE КодЛокальнойСети = @Id;
+    UPDATE vwЛокальнаяСеть
+    SET КодЛицаЗаказчика = @PersonCustomerId, Примечания = @Description, Подключено = @Connected,
+        КодСотрудника = @EmployeeId, КодРозетки = @SocketId
+    WHERE КодЛокальнойСети = @TargetId;
+    UPDATE vwЛокальнаяСеть
+    SET КодРозетки = @TargetSocketId
+    WHERE КодЛокальнойСети = @Id;
+    COMMIT TRANSACTION;
+    SELECT 0; -- успех
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
+    DECLARE @ErrorState int = ERROR_STATE();
+    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
+END CATCH;";
+
+    /// <summary>Проверка актуального PoE-порта и вызов legacy-процедуры. Параметр: КодЛокальнойСети; timeout 120 секунд.</summary>
+    public const string EXEC_ResetPoEport = @"
+IF NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть WHERE КодЛокальнойСети = @КодЛокальнойСети AND PoE = 1)
+    RAISERROR('Операция PoE недоступна для этой записи.', 16, 1);
+ELSE
+    EXEC dbo.sp_ResetPoEport @КодЛокальнойСети = @КодЛокальнойСети;";
 }

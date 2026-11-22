@@ -135,6 +135,11 @@ public static class DapperColumnMapper
         RegisterColumnMap<Inventory.UpsTest>();
         RegisterColumnMap<Inventory.EquipmentActualInventory>();
         RegisterColumnMap<Inventory.EquipmentNetworkNameHistory>();
+        RegisterColumnMap<Inventory.EquipmentNetworkPortLink>();
+        RegisterColumnMap<Inventory.NetEquipmentLinkMatch>();
+        RegisterColumnMap<Inventory.LocalNetworkPort>();
+        RegisterColumnMap<Inventory.LocalNetworkNeighborPort>();
+        RegisterColumnMap<Inventory.NetSocketLookup>();
         _initialized = true;
     }
 
