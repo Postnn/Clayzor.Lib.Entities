@@ -71,6 +71,10 @@ public sealed class EquipmentSimService
     [Column(SimServiceColumns.ТарифныйПлан)]
     public byte IsTariffPlan { get; set; }
 
+    /// <summary>Идентификатор изменившего сотрудника.</summary>
+    [Column(EquipmentColumns.Изменил)]
+    public int ChangedById { get; set; }
+
     /// <summary>ФИО изменившего сотрудника.</summary>
     [Column(EquipmentPeriodColumns.ИзменилФИО)]
     public string ChangedByName { get; set; } = string.Empty;

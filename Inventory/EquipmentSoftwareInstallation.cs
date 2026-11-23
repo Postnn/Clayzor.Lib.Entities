@@ -47,6 +47,10 @@ public sealed class EquipmentSoftwareInstallation
     [Column(SoftwareInstallationColumns.Деинсталировано)]
     public byte IsUninstalled { get; set; }
 
+    /// <summary>Идентификатор изменившего сотрудника.</summary>
+    [Column(EquipmentColumns.Изменил)]
+    public int ChangedById { get; set; }
+
     /// <summary>ФИО изменившего сотрудника.</summary>
     [Column(EquipmentPeriodColumns.ИзменилФИО)]
     public string ChangedByName { get; set; } = string.Empty;

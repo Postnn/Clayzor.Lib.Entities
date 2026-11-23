@@ -59,6 +59,10 @@ public sealed class EquipmentAccounting
     [Column(EquipmentColumns.Примечания)]
     public string Notes { get; set; } = string.Empty;
 
+    /// <summary>Идентификатор изменившего сотрудника.</summary>
+    [Column(EquipmentColumns.Изменил)]
+    public int ChangedById { get; set; }
+
     /// <summary>ФИО изменившего сотрудника.</summary>
     [Column(EquipmentPeriodColumns.ИзменилФИО)]
     public string ChangedByName { get; set; } = string.Empty;
