@@ -42,4 +42,23 @@ public sealed class Employee : ILookupEntity
         cancellationToken.ThrowIfCancellationRequested();
         return rows.SingleOrDefault();
     }
+
+    /// <summary>Проверяет роль после свежего подтверждения Windows/SQL principal и глобальной или личной области.</summary>
+    public static async Task<bool> HasRoleAsync(
+        DbManager db,
+        string? windowsPrincipal,
+        Роли role,
+        int? personId = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (await GetCurrentAsync(db, windowsPrincipal, cancellationToken) is null)
+            return false;
+        var sql = personId is null
+            ? SQLQueries.SELECT_ТекущийПользовательИмеетРоль
+            : SQLQueries.SELECT_ТекущийПользовательИмеетРольПоЛицу;
+        var rows = await db.QueryRequiredAsync<int>(sql,
+            new { RoleId = (int)role, PersonId = personId }, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return rows.FirstOrDefault() == 1;
+    }
 }

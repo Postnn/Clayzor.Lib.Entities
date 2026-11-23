@@ -93,12 +93,30 @@ public sealed class EquipmentAccounting
         return null;
     }
 
-    /// <summary>Добавляет или обновляет запись бухгалтерского учёта.</summary>
-    public Task SaveAsync(DbManager db)
+    /// <summary>Добавляет запись или атомарно обновляет существующую с проверкой версии, владельцев и документов.</summary>
+    public async Task SaveAsync(DbManager db)
     {
         ApplyMaterialRules();
-        var sql = Id == 0 ? SQLQueries.INSERT_ОборудованиеБухУчета : SQLQueries.UPDATE_ID_ОборудованиеБухУчета;
-        return db.ExecuteAsync(sql, new
+        if (Id == 0)
+        {
+            await db.ExecuteAsync(SQLQueries.INSERT_ОборудованиеБухУчета, new
+            {
+                КодОборудованияБухУчета = Id,
+                КодОборудования = EquipmentId,
+                КодЛица = OwnerId,
+                Материал = IsMaterial,
+                КодЛицаАрендатора = TenantId,
+                ИнвентарныйНомер = InventoryNumber ?? string.Empty,
+                От = DateFrom?.Date,
+                КодДокументаПоступления = ReceiptDocumentId,
+                До = DateTo?.Date,
+                КодДокументаСписания = WriteOffDocumentId,
+                Примечания = Notes ?? string.Empty,
+            }, commandType: CommandType.Text);
+            return;
+        }
+
+        var status = await db.ExecuteWriteScalarAsync<int?>(SQLQueries.UPDATE_ID_ОборудованиеБухУчета, new
         {
             КодОборудованияБухУчета = Id,
             КодОборудования = EquipmentId,
@@ -111,7 +129,19 @@ public sealed class EquipmentAccounting
             До = DateTo?.Date,
             КодДокументаСписания = WriteOffDocumentId,
             Примечания = Notes ?? string.Empty,
-        }, commandType: CommandType.Text);
+            ExpectedChangedAt = ChangedAt,
+            RoleIdPrimary = (int)Роли.Бухгалтер,
+            RoleIdSecondary = (int)Роли.Главный_бухгалтер_1С,
+        });
+        if (status == 0)
+            return;
+        if (status == 1)
+            throw new InvalidOperationException("Запись бухгалтерского учёта изменилась или перенесена в другое оборудование. Обновите данные.");
+        if (status == 2 || status == 3)
+            throw new UnauthorizedAccessException("Недостаточно прав для изменения бухгалтерского учёта по фактическому или новому владельцу.");
+        if (status == 4)
+            throw new InvalidOperationException("Документ бухгалтерского учёта недоступен текущему пользователю.");
+        throw new InvalidOperationException("Не получен корректный результат обновления бухгалтерского учёта. Обновите данные и проверьте состояние записи.");
     }
 
     /// <summary>Атомарно удаляет подтверждённую запись, если она всё ещё последняя и доступна текущему пользователю.</summary>

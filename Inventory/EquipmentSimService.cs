@@ -47,9 +47,25 @@ public sealed class EquipmentSimService
     [Column(SimServiceColumns.СтоимостьВмесяц)]
     public decimal MonthlyCost { get; set; }
 
+    /// <summary>Плановая дата подключения; в действующем legacy SQL источник не задан.</summary>
+    [Column(SimServiceColumns.ОтПлан)]
+    public DateTime? PlannedDateFrom { get; set; }
+
+    /// <summary>Включительная плановая дата отключения; в действующем legacy SQL источник не задан.</summary>
+    [Column(SimServiceColumns.ДоПлан)]
+    public DateTime? PlannedDateTo { get; set; }
+
     /// <summary>Признак обязательной услуги компании.</summary>
     [Column(SimServiceColumns.КодОбязательнойУслугиДляКомпании)]
     public bool IsCompanyRequired { get; set; }
+
+    /// <summary>Признак услуги, которую необходимо отключить.</summary>
+    [Column(SimServiceColumns.УслугуНеобходимоОтключить)]
+    public byte MustBeDisabled { get; set; }
+
+    /// <summary>Описание обязательной услуги компании.</summary>
+    [Column(SimServiceColumns.ОбязательнаяУслуга)]
+    public string RequiredServiceDescription { get; set; } = string.Empty;
 
     /// <summary>Признак тарифного плана.</summary>
     [Column(SimServiceColumns.ТарифныйПлан)]
@@ -62,6 +78,24 @@ public sealed class EquipmentSimService
     /// <summary>Время изменения.</summary>
     [Column(EquipmentColumns.Изменено)]
     public DateTime ChangedAt { get; set; }
+
+    /// <summary>Проверяет просроченное плановое подключение или отключение по правилам legacy.</summary>
+    public bool HasOverduePlannedAction(DateTime today) =>
+        PlannedDateFrom?.Date < today.Date || PlannedDateTo?.Date <= today.Date;
+
+    /// <summary>Проверяет действующую блокирующую услугу с учётом включительной UI-даты окончания.</summary>
+    public bool IsActiveBlock(DateTime today) =>
+        ServiceTypeId == "_BLOCK" && (DateTo is null || DateTo.Value.Date >= today.Date);
+
+    /// <summary>Возвращает предупреждение строки о требуемом отключении или просроченном плане.</summary>
+    public string? GetWarning(DateTime today)
+    {
+        if (MustBeDisabled > 0)
+            return string.IsNullOrWhiteSpace(RequiredServiceDescription)
+                ? "Услугу необходимо отключить."
+                : RequiredServiceDescription;
+        return HasOverduePlannedAction(today) ? "Плановое действие просрочено." : null;
+    }
 
     /// <summary>Проверяет тип, название и фактические даты услуги.</summary>
     public string? Validate(DateTime today)

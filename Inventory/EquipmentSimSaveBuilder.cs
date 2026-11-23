@@ -27,7 +27,12 @@ internal static class EquipmentSimSaveBuilder
         sql.AppendLine("    BEGIN TRANSACTION;");
         if (duplicateEquipmentId is not null)
         {
-            sql.AppendLine("    UPDATE vwОборудование SET Списано = @От WHERE КодОборудования = @ДубликатОборудования;");
+            sql.AppendLine("    UPDATE vwОборудование SET Списано = @От");
+            sql.AppendLine("    WHERE КодОборудования = @ДубликатОборудования AND Списано IS NULL");
+            sql.AppendLine("      AND EXISTS (SELECT 1 FROM vwSIMКарты");
+            sql.AppendLine("                  WHERE КодОборудования = @ДубликатОборудования AND НомерТелефона = @НомерТелефона);");
+            sql.AppendLine("    IF @@ROWCOUNT <> 1");
+            sql.AppendLine("        RAISERROR('Дубликат SIM изменился или уже списан. Обновите данные и повторите сохранение.', 16, 1);");
             sql.AppendLine("    SET @КодЛицаПерсональныхДанных = COALESCE(@КодЛицаПерсональныхДанных,");
             sql.AppendLine("        (SELECT КодЛицаПерсональныхДанных FROM vwSIMКарты WHERE КодОборудования = @ДубликатОборудования));");
         }

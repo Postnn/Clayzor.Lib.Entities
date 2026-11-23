@@ -199,6 +199,11 @@ internal static class SimCardColumns
     public const string КодЛицаПерсональныхДанных = "КодЛицаПерсональныхДанных";
     public const string Договор = "Договор";
     public const string ЛицоПерсональныхДанных = "ЛицоПерсональныхДанных";
+    public const string Подчинённый = "Подчинённый";
+    public const string НДСНаСумму = "НДСНаСумму";
+    public const string НДСВТарификации = "НДСВТарификации";
+    public const string СтавкаНДС = "СтавкаНДС";
+    public const string ОкруглениеСуммы = "ОкруглениеСуммы";
 }
 
 internal static class SimServiceColumns
@@ -210,6 +215,10 @@ internal static class SimServiceColumns
     public const string СтоимостьВдень = "СтоимостьВдень";
     public const string СтоимостьВмесяц = "СтоимостьВмесяц";
     public const string КодОбязательнойУслугиДляКомпании = "КодОбязательнойУслугиДляКомпании";
+    public const string УслугуНеобходимоОтключить = "УслугуНеобходимоОтключить";
+    public const string ОбязательнаяУслуга = "ОбязательнаяУслуга";
+    public const string ОтПлан = "ОтПлан";
+    public const string ДоПлан = "ДоПлан";
     public const string ТарифныйПлан = "ТарифныйПлан";
 }
 
