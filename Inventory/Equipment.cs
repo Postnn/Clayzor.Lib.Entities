@@ -163,10 +163,13 @@ public sealed class Equipment
     {
         if (Id <= 0)
             throw new InvalidOperationException("Не указан идентификатор редактируемого оборудования.");
+        var parameters = CreateUpdateParameters();
+        AddUpdateConcurrencyParameter(parameters);
         var affected = await db.ExecuteAsync(
-            SQLQueries.UPDATE_Оборудование, CreateUpdateParameters(), commandType: CommandType.Text);
+            SQLQueries.UPDATE_Оборудование, parameters, commandType: CommandType.Text);
         if (affected != 1)
-            throw new InvalidOperationException("Запись оборудования не найдена или не была обновлена.");
+            throw new InvalidOperationException(
+                "Запись оборудования была изменена или удалена другим пользователем. Обновите данные и повторите операцию.");
     }
 
     /// <summary>Атомарно обновляет основные поля и diff телефонных связей.</summary>
@@ -180,6 +183,10 @@ public sealed class Equipment
         var command = EquipmentPhoneSaveBuilder.Build(this, original, current);
         return db.ExecuteAsync(command.Sql, command.Parameters, commandType: CommandType.Text);
     }
+
+    /// <summary>Добавляет точный ChangedAt-токен открытого снимка без расширения legacy-набора из 15 полей.</summary>
+    internal void AddUpdateConcurrencyParameter(DynamicParameters parameters) =>
+        parameters.Add("@ИсходноеИзменено", ChangedAtUtc, DbType.DateTime);
 
     internal DynamicParameters CreateUpdateParameters()
     {

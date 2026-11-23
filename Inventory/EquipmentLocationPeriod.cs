@@ -51,11 +51,17 @@ public sealed class EquipmentLocationPeriod
     }
 
     /// <summary>Обновляет только срок возврата и примечания существующего периода.</summary>
-    public Task UpdateAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеРасположение, new
+    public async Task UpdateAsync(DbManager db)
     {
-        КодОборудования = EquipmentId,
-        От = FromUtc,
-        СрокВозврата = ReturnDate,
-        Примечания = Notes ?? string.Empty,
-    }, commandType: CommandType.Text);
+        var affectedRows = await db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеРасположение, new
+        {
+            КодОборудования = EquipmentId,
+            От = FromUtc,
+            СрокВозврата = ReturnDate,
+            Примечания = Notes ?? string.Empty,
+        }, commandType: CommandType.Text);
+        if (affectedRows != 1)
+            throw new InvalidOperationException(
+                "Период расположения был изменён или удалён другим пользователем. Обновите данные и повторите операцию.");
+    }
 }

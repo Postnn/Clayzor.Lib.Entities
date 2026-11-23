@@ -22,7 +22,14 @@ public static class PhoneNumberQuery
             parameters.Add(name, ids[index]);
             names.Add(name);
         }
+        var predicate = $"   AND T0.КодТелефонногоНомера NOT IN ({string.Join(", ", names)})";
+        var orderByIndex = sql.ToString().LastIndexOf("ORDER BY", StringComparison.OrdinalIgnoreCase);
+        if (orderByIndex >= 0)
+        {
+            sql.Insert(orderByIndex, predicate + Environment.NewLine);
+            return;
+        }
         sql.AppendLine();
-        sql.Append("   AND T0.КодТелефонногоНомера NOT IN (").Append(string.Join(", ", names)).Append(')');
+        sql.Append(predicate);
     }
 }

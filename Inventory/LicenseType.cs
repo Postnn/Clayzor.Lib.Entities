@@ -13,6 +13,10 @@ public sealed class LicenseType : ILookupEntity
     [Column(LicenseColumns.Наименование)]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>Пояснение типа лицензии.</summary>
+    [Column("Описание")]
+    public string Description { get; set; } = string.Empty;
+
     /// <summary>Признак временной лицензии.</summary>
     [Column(LicenseColumns.Временная)]
     public byte Temporary { get; set; }

@@ -13,13 +13,14 @@ internal static class EquipmentPhoneSaveBuilder
     {
         var parameters = new DynamicParameters();
         parameters.AddDynamicParams(equipment.CreateUpdateParameters());
+        equipment.AddUpdateConcurrencyParameter(parameters);
         var sql = new StringBuilder();
         sql.AppendLine("SET NOCOUNT ON;");
         sql.AppendLine("SET XACT_ABORT ON;");
         sql.AppendLine("BEGIN TRY");
         sql.AppendLine("    BEGIN TRANSACTION;");
         sql.AppendLine(SQLQueries.UPDATE_Оборудование);
-        sql.AppendLine("    IF @@ROWCOUNT <> 1 RAISERROR('Запись оборудования не найдена или не была обновлена.', 16, 1);");
+        sql.AppendLine("    IF @@ROWCOUNT <> 1 RAISERROR('Запись оборудования была изменена или удалена другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
 
         var originalIds = original.Select(item => item.PhoneId).ToHashSet();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();

@@ -103,6 +103,32 @@ public sealed class EquipmentComputerSnapshot
         SsdComponents = EquipmentComputerDetail.Parse(SsdDetail);
     }
 
+    /// <summary>
+    /// Проверяет пары стандартных конфигураций и дат, актуальность дат на переданный день
+    /// и соответствие числа RAM-компонентов фактическому числу банков модели.
+    /// </summary>
+    /// <param name="today">Текущий календарный день, определённый вызывающим контекстом.</param>
+    /// <param name="memoryBanks">Число банков RAM фактической модели; null отключает эту проверку.</param>
+    /// <returns>Текст первой ошибки либо null для допустимой конфигурации.</returns>
+    public string? ValidateConfiguration(DateTime today, int? memoryBanks = null)
+    {
+        if (Configuration1Id is not null && Configuration1Date is null)
+            return "Необходимо указать дату Стандартной конфигурации 1!";
+        if (Configuration2Id is not null && Configuration2Date is null)
+            return "Необходимо указать дату Стандартной конфигурации 2!";
+        if (Configuration1Id is null && (Configuration1Date is not null || Configuration2Id is not null))
+            return "Необходимо указать Стандартную конфигурацию 1!";
+        if (Configuration2Id is null && Configuration2Date is not null)
+            return "Необходимо указать Стандартную конфигурацию 2!";
+        if (Configuration1Date?.Date > today.Date)
+            return "Дата Стандартной конфигурации 1 не может быть больше текущей!";
+        if (Configuration2Date?.Date > today.Date)
+            return "Дата Стандартной конфигурации 2 не может быть больше текущей!";
+        if (memoryBanks is not null && RamComponents.Count > memoryBanks.Value)
+            return $"Количество компонентов RAM ({RamComponents.Count}) превышает число банков памяти модели ({memoryBanks.Value}).";
+        return null;
+    }
+
     /// <summary>Сохраняет дневной снимок через подтверждённый UPSERT.</summary>
     public Task SaveAsync(DbManager db)
     {

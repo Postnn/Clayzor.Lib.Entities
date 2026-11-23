@@ -101,10 +101,10 @@ public sealed class EquipmentSimService
         return HasOverduePlannedAction(today) ? "Плановое действие просрочено." : null;
     }
 
-    /// <summary>Проверяет тип, название и фактические даты услуги.</summary>
+    /// <summary>Проверяет catalog/custom-идентичность и фактические даты услуги.</summary>
     public string? Validate(DateTime today)
     {
-        if (string.IsNullOrWhiteSpace(ServiceTypeId))
+        if (string.IsNullOrWhiteSpace(ServiceTypeId) && string.IsNullOrWhiteSpace(ServiceName))
             return "Выберите тип услуги.";
         if (string.IsNullOrWhiteSpace(ServiceName))
             return "Укажите название услуги.";

@@ -48,6 +48,8 @@ internal static class EquipmentResponsibleSaveBuilder
                 sql.AppendLine("    SET @От = @ResponsibleFrom;");
         }
         sql.AppendLine(SQLQueries.UPDATE_ОборудованиеСотрудников_Закрытие);
+        sql.AppendLine("    IF @@ROWCOUNT <> 1");
+        sql.AppendLine("        RAISERROR('Период ответственности был изменен или удален другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
         if (next is not null)
             sql.AppendLine(SQLQueries.INSERT_ОборудованиеСотрудников);
         sql.AppendLine("    COMMIT TRANSACTION;");

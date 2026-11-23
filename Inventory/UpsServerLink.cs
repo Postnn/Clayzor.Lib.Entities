@@ -30,6 +30,14 @@ public sealed class UpsServerLink
     [Column(UpsColumns.НазваниеОборудования)]
     public string EquipmentName { get; set; } = string.Empty;
 
+    /// <summary>ФИО изменившего сотрудника.</summary>
+    [Column(EquipmentPeriodColumns.ИзменилФИО)]
+    public string ChangedByName { get; set; } = string.Empty;
+
+    /// <summary>Время последнего изменения в UTC.</summary>
+    [Column(EquipmentColumns.Изменено)]
+    public DateTime ChangedAt { get; set; }
+
     /// <summary>Проверяет актуальные права и сохраняет diff серверов и тестов одной транзакцией.</summary>
     public static async Task SaveDetailsAsync(
         DbManager db,
@@ -49,6 +57,8 @@ public sealed class UpsServerLink
             throw new UnauthorizedAccessException("Недостаточно прав для изменения подключений UPS.");
         if (status == 2)
             throw new InvalidOperationException("Подключение UPS изменилось. Обновите данные и повторите операцию.");
+        if (status == 4)
+            throw new InvalidOperationException("Признак выключения доступен только для компьютеров. Обновите данные и повторите операцию.");
         throw new InvalidOperationException("Не получен корректный результат сохранения подключения UPS. Обновите данные и проверьте состояние записи.");
     }
 }

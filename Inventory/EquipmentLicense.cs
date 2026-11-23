@@ -86,8 +86,12 @@ public sealed class EquipmentLicense
             return "Начало действия не может быть позже окончания.";
         if (ServerCount is null)
             return "Укажите количество серверов.";
+        if (ServerCount < 0)
+            return "Количество серверов не может быть отрицательным.";
         if (ClientCount is null || ClientCount == 0)
             return "Количество клиентов должно быть ненулевым.";
+        if (ClientCount < 0)
+            return "Количество клиентов не может быть отрицательным.";
         return null;
     }
 

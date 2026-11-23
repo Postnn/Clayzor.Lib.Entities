@@ -57,15 +57,20 @@ public sealed class EquipmentResponsiblePeriod
         Примечания = Notes ?? string.Empty,
     }, commandType: CommandType.Text);
 
-    /// <summary>Обновляет только срок возврата, примечания и окончание существующего периода.</summary>
-    public Task UpdateAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеСотрудников, new
+    /// <summary>Обновляет только срок возврата и примечания существующего периода.</summary>
+    public async Task UpdateAsync(DbManager db)
     {
-        КодОборудования = EquipmentId,
-        От = FromUtc,
-        До = ToUtc,
-        СрокВозврата = ReturnDate,
-        Примечания = Notes ?? string.Empty,
-    }, commandType: CommandType.Text);
+        var affectedRows = await db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеСотрудников, new
+        {
+            КодОборудования = EquipmentId,
+            От = FromUtc,
+            СрокВозврата = ReturnDate,
+            Примечания = Notes ?? string.Empty,
+        }, commandType: CommandType.Text);
+        if (affectedRows != 1)
+            throw new InvalidOperationException(
+                "Период ответственности был изменён или удалён другим пользователем. Обновите данные и повторите операцию.");
+    }
 
     /// <summary>Атомарно закрывает период, добавляет новое расположение и следующего ответственного.</summary>
     public Task WithdrawAsync(DbManager db, EquipmentResponsiblePeriod? next, EquipmentLocationPeriod? location)
