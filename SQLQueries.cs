@@ -6,6 +6,65 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    /// <summary>Снимок прав на действия с FMTN через штатное представление.</summary>
+    public const string SELECT_SimFmtnAccess = """
+        SELECT CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwSIMКартыFMTN','OBJECT','SELECT'),0)) AS CanRead,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwSIMКартыFMTN','OBJECT','INSERT'),0)) AS CanInsert,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwSIMКартыFMTN','OBJECT','UPDATE'),0)) AS CanUpdate,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwSIMКартыFMTN','OBJECT','DELETE'),0)) AS CanDelete;
+        """;
+
+    /// <summary>FMTN по точному строковому ключу. Место для доверенной SQL-подсказки блокировки.</summary>
+    public const string SELECT_SimFmtn = """
+        SELECT f.ПрефиксFMTN AS Prefix,f.КороткийНомер AS ShortNumber,f.Описание AS Description,
+               f.Изменил AS ChangedBy,e.Сотрудник AS ChangedByName,f.Изменено AS ChangedAt
+        FROM dbo.vwSIMКартыFMTN f {0}
+        LEFT JOIN dbo.Сотрудники e ON e.КодСотрудника=f.Изменил
+        WHERE f.ПрефиксFMTN=@Key;
+        """;
+
+    /// <summary>Создание отдельной записи FMTN.</summary>
+    public const string INSERT_SimFmtn = """
+        INSERT dbo.vwSIMКартыFMTN (ПрефиксFMTN,КороткийНомер,Описание) VALUES (@Prefix,@ShortNumber,@Description);
+        """;
+
+    /// <summary>Изменение FMTN по исходному ключу, в том числе замена строкового префикса.</summary>
+    public const string UPDATE_SimFmtn = """
+        UPDATE dbo.vwSIMКартыFMTN SET ПрефиксFMTN=@Prefix,КороткийНомер=@ShortNumber,Описание=@Description
+        WHERE ПрефиксFMTN=@Key;
+        """;
+
+    /// <summary>Удаление FMTN по строковому ключу.</summary>
+    public const string DELETE_SimFmtn = "DELETE dbo.vwSIMКартыFMTN WHERE ПрефиксFMTN=@Key;";
+
+    /// <summary>Поиск разрешённых почтовых адресов в штатном представлении.</summary>
+    public const string SELECT_SlBlAddresses = """
+        SELECT DISTINCT TOP (@Limit) Address FROM dbo.vwMailBoxesAddresses
+        WHERE Address LIKE @Pattern ORDER BY Address;
+        """;
+
+    /// <summary>Восстановление точного почтового адреса.</summary>
+    public const string SELECT_SlBlAddressById = "SELECT Address FROM dbo.vwMailBoxesAddresses WHERE Address=@Address;";
+
+    /// <summary>Безопасный и заблокированный списки одного почтового адреса.</summary>
+    public const string SELECT_SlBlLists = """
+        SELECT MAX(CASE WHEN Block=0 THEN SlBl END) AS SafeList,
+               MAX(CASE WHEN Block=1 THEN SlBl END) AS BlockedList
+        FROM dbo.vwMailBoxesAddressesSlBl WHERE Address=@Address GROUP BY Address;
+        """;
+
+    /// <summary>Сверка фактического и желаемого содержимого через штатный parser. Выполняется только чтение.</summary>
+    public const string SELECT_SlBlDifferences = """
+        DECLARE @Actual nvarchar(max);
+        SET @Actual = ISNULL((SELECT SlBl FROM dbo.vwMailBoxesAddressesSlBl WHERE Address=@Address AND Block=@Block),N'');
+        WITH SavedWords AS (SELECT DISTINCT word FROM dbo.fn_SplitText(@Actual)),
+             DraftWords AS (SELECT DISTINCT word FROM dbo.fn_SplitText(@Text)),
+             NotDeleted AS (SELECT word FROM SavedWords EXCEPT SELECT word FROM DraftWords),
+             NotSaved AS (SELECT word FROM DraftWords EXCEPT SELECT word FROM SavedWords)
+        SELECT ISNULL(STUFF((SELECT N', '+word FROM NotDeleted ORDER BY word FOR XML PATH(''),TYPE).value('.', 'nvarchar(max)'),1,2,N''),N'') AS NotDeleted,
+               ISNULL(STUFF((SELECT N', '+word FROM NotSaved ORDER BY word FOR XML PATH(''),TYPE).value('.', 'nvarchar(max)'),1,2,N''),N'') AS NotSaved;
+        """;
+
     /// <summary>
     /// Выборка всех медицинских исследований с названием типа.
     /// Возвращает базовый запрос без WHERE и ORDER BY —
