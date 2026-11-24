@@ -16,13 +16,17 @@ internal static class EquipmentLocationSaveBuilder
         parameters.Add("@КодРасположения", location.LocationId, DbType.Int32);
         parameters.Add("@СрокВозврата", location.ReturnDate, DbType.DateTime);
         parameters.Add("@Примечания", location.Notes ?? string.Empty, DbType.String, size: 300);
-        if (responsible is not null)
-            parameters.Add("@КодСотрудника", responsible.EmployeeId, DbType.Int32);
+        parameters.Add("@КодСотрудника", responsible?.EmployeeId, DbType.Int32);
+        parameters.Add("@РасположениеНаРуках", (int)Расположения.На_руках, DbType.Int32);
         var sql = new StringBuilder();
         sql.AppendLine("SET NOCOUNT ON;");
         sql.AppendLine("SET XACT_ABORT ON;");
         sql.AppendLine("BEGIN TRY");
         sql.AppendLine("    BEGIN TRANSACTION;");
+        sql.AppendLine("    IF @КодРасположения = @РасположениеНаРуках AND @КодСотрудника IS NULL");
+        sql.AppendLine("       AND NOT EXISTS (SELECT 1 FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)");
+        sql.AppendLine("                       WHERE КодОборудования = @КодОборудования AND До IS NULL)");
+        sql.AppendLine("        RAISERROR('Для расположения «На руках» без действующего ответственного укажите сотрудника.', 16, 1);");
         sql.AppendLine(SQLQueries.INSERT_ОборудованиеРасположение);
         if (responsible is not null)
             sql.AppendLine(SQLQueries.INSERT_ОборудованиеСотрудникаИзРасположения);

@@ -15,6 +15,8 @@ internal static class EquipmentResponsibleSaveBuilder
         parameters.Add("@КодОборудования", current.EquipmentId, DbType.Int32);
         parameters.Add("@От", location?.FromUtc ?? next?.FromUtc ?? current.FromUtc, DbType.DateTime);
         parameters.Add("@ТекущийОт", current.FromUtc, DbType.DateTime);
+        parameters.Add("@ТекущийКодСотрудника", current.EmployeeId, DbType.Int32);
+        parameters.Add("@ТекущееИзменено", current.ChangedAtUtc, DbType.DateTime);
         parameters.Add("@До", current.ToUtc, DbType.DateTime);
         parameters.Add("@СрокВозврата", next?.ReturnDate, DbType.DateTime);
         parameters.Add("@Примечания", next?.Notes ?? string.Empty, DbType.String, size: 300);
@@ -23,16 +25,18 @@ internal static class EquipmentResponsibleSaveBuilder
             parameters.Add("@КодСотрудника", next.EmployeeId, DbType.Int32);
             parameters.Add("@ОтСледующего", next.FromUtc, DbType.DateTime);
         }
-        if (location is not null)
-        {
-            parameters.Add("@КодРасположения", location.LocationId, DbType.Int32);
-        }
+        parameters.Add("@КодРасположения", location?.LocationId, DbType.Int32);
+        parameters.Add("@РасположениеНаРуках", (int)Расположения.На_руках, DbType.Int32);
 
         var sql = new StringBuilder();
         sql.AppendLine("SET NOCOUNT ON;");
         sql.AppendLine("SET XACT_ABORT ON;");
         sql.AppendLine("BEGIN TRY");
         sql.AppendLine("    BEGIN TRANSACTION;");
+        sql.AppendLine("    IF EXISTS (SELECT 1 FROM vwОборудование WITH (UPDLOCK, HOLDLOCK)");
+        sql.AppendLine("               WHERE КодОборудования = @КодОборудования AND КодРасположения = @РасположениеНаРуках)");
+        sql.AppendLine("       AND (@КодРасположения IS NULL OR @КодРасположения = @РасположениеНаРуках)");
+        sql.AppendLine("        RAISERROR('Для изъятия оборудования с расположения «На руках» укажите новое расположение.', 16, 1);");
         if (location is not null)
         {
             sql.AppendLine("    DECLARE @ResponsibleReturn datetime = @СрокВозврата;");

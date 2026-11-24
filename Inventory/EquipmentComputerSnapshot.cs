@@ -75,6 +75,10 @@ public sealed class EquipmentComputerSnapshot
     [Column(EquipmentColumns.Изменено)]
     public DateTime ChangedAt { get; set; }
 
+    /// <summary>Признак существования строки на момент открытия редактора.</summary>
+    [NotMapped]
+    public bool ExpectedExisting { get; set; }
+
     /// <summary>Название первой стандартной конфигурации.</summary>
     [Column(EquipmentComputerColumns.Конфигурация1)]
     public string Configuration1Name { get; set; } = string.Empty;
@@ -142,6 +146,8 @@ public sealed class EquipmentComputerSnapshot
         {
             КодОборудования = EquipmentId,
             С = Date.Date,
+            ОжидаетсяСуществующий = ExpectedExisting ? 1 : 0,
+            ИсходноеИзменено = ChangedAt,
             RAM = RamMb,
             RAMDetail = RamDetail,
             HD = HdGb,

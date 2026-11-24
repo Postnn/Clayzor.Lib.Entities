@@ -123,6 +123,7 @@ public sealed class EquipmentSimService
         КодОборудования = EquipmentId,
         НомерТелефона = PhoneNumber,
         КодSIMКартыДопУслугиСотОператора = Id == 0 ? (int?)null : Id,
+        ИсходноеИзменено = ChangedAt,
         КодТипаДопУслугиСотОператора = ServiceTypeId,
         ДопУслугаСотОператора = ServiceName,
         От = DateFrom?.Date,

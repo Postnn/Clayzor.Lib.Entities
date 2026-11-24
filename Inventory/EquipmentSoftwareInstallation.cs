@@ -76,13 +76,15 @@ public sealed class EquipmentSoftwareInstallation
     }
 
     /// <summary>Добавляет или обновляет запись с эксклюзивной датой деинсталляции.</summary>
-    public Task SaveAsync(DbManager db)
+    public async Task SaveAsync(DbManager db)
     {
         var sql = Id == 0 ? SQLQueries.INSERT_ОборудованиеПО : SQLQueries.UPDATE_ID_ОборудованиеПО;
-        return db.ExecuteAsync(sql, new
+        var affectedRows = await db.ExecuteAsync(sql, new
         {
             КодОборудованияПО = Id,
             КодОборудования = EquipmentId,
+            ИсходныйКодОборудования = EquipmentId,
+            ИсходноеИзменено = ChangedAt,
             КодПО = SoftwareId,
             От = InstalledAt?.Date,
             До = UninstalledAt?.Date,
@@ -90,5 +92,8 @@ public sealed class EquipmentSoftwareInstallation
             Дистрибутив = Distribution,
             Примечания = Notes ?? string.Empty,
         }, commandType: CommandType.Text);
+        if (affectedRows != 1)
+            throw new InvalidOperationException(
+                "Установка ПО была изменена или удалена другим пользователем. Обновите данные и повторите операцию.");
     }
 }

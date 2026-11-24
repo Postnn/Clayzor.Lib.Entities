@@ -59,6 +59,10 @@ public sealed class EquipmentLicense
     [Column(EquipmentColumns.Изменено)]
     public DateTime ChangedAt { get; set; }
 
+    /// <summary>Признак существования лицензии на момент открытия редактора.</summary>
+    [NotMapped]
+    public bool ExpectedExisting { get; set; }
+
     /// <summary>Очищает поля, скрытые выбранным типом лицензии.</summary>
     public void ApplyTypeRules(LicenseType type)
     {
@@ -99,6 +103,8 @@ public sealed class EquipmentLicense
     public Task SaveAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_Soft, new
     {
         КодОборудования = EquipmentId,
+        ОжидаетсяСуществующий = ExpectedExisting ? 1 : 0,
+        ИсходноеИзменено = ChangedAt,
         КодТипаЛицензирования = LicenseTypeId,
         НомерЛицензиата = LicenseeNumber ?? string.Empty,
         URLПроверкиЛицензии = VerificationUrl ?? string.Empty,

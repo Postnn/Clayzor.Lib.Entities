@@ -64,6 +64,7 @@ public sealed class EquipmentResponsiblePeriod
         {
             КодОборудования = EquipmentId,
             От = FromUtc,
+            ИсходноеИзменено = ChangedAtUtc,
             СрокВозврата = ReturnDate,
             Примечания = Notes ?? string.Empty,
         }, commandType: CommandType.Text);
