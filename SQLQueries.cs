@@ -6,6 +6,91 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    /// <summary>Пригодное рабочее место и признак склада для инвентаризации.</summary>
+    public const string SELECT_LocationFactSite = """
+        SELECT КодРасположения AS Id, РасположениеPath1 AS Name, CONVERT(bit,CASE WHEN РабочееМесто=4 THEN 1 ELSE 0 END) AS IsWarehouse
+        FROM dbo.vwРасположения {0}
+        WHERE КодРасположения=@LocationId AND РабочееМесто IN (1,2,3,4,5) AND Закрыто=0;
+        """;
+
+    /// <summary>Инвентаризация рабочего места: учётное местоположение и последний факт.</summary>
+    public const string SELECT_LocationFactRows = """
+        WITH Booked AS (
+            SELECT e.КодОборудования AS Id, r.От AS FromUtc,
+                   t.ТипОборудования + ISNULL(' '+NULLIF(e.СетевоеИмя,''),'')
+                   + ISNULL(' '+NULLIF(m.МодельОборудования,''),'') + ISNULL(' PN:'+NULLIF(m.PN,''),'')
+                   + ISNULL(' SN:'+NULLIF(e.SN,''),'') + ISNULL(' '+NULLIF(sim.НомерТелефона,''),'')
+                   + ISNULL(' ('+NULLIF(e.Примечания,'')+')','') AS Name
+            FROM dbo.ОборудованиеРасположение r
+            JOIN dbo.vwОборудование e ON e.КодОборудования=r.КодОборудования AND e.Списано IS NULL
+            JOIN dbo.МоделиОборудования m ON m.КодМоделиОборудования=e.КодМоделиОборудования
+            JOIN dbo.ТипыОборудования t ON t.КодТипаОборудования=m.КодТипаОборудования
+            OUTER APPLY (SELECT TOP (1) s.НомерТелефона FROM dbo.vwSIMКарты s
+                         WHERE s.КодОборудования=e.КодОборудования ORDER BY s.НомерТелефона) sim
+            WHERE r.КодРасположения=@LocationId AND (@ItOnly=0 OR m.КодТипаОборудования<100)
+              AND NOT EXISTS (SELECT 1 FROM dbo.ОборудованиеРасположение x WHERE x.КодОборудования=r.КодОборудования AND x.От>r.От)
+        ), Observed AS (
+            SELECT a.КодОборудования AS Id, a.Оборудование AS Name, a.ВремяПроверки AS CheckedAt,
+                   a.КодРасположения AS LocationId, l.РасположениеPath1 AS LocationName,
+                   CONVERT(bit,a.СломаноРемонтуНеПодлежит) AS Broken, a.Примечание AS Notes
+            FROM dbo.vwРеальноеРасположениеОборудования a
+            JOIN dbo.vwРасположения l ON l.КодРасположения=a.КодРасположения
+            JOIN dbo.vwОборудование e ON e.КодОборудования=a.КодОборудования AND e.Списано IS NULL
+            JOIN dbo.МоделиОборудования m ON m.КодМоделиОборудования=e.КодМоделиОборудования
+            WHERE a.КодРасположения=@LocationId AND (@ItOnly=0 OR m.КодТипаОборудования<100)
+              AND NOT EXISTS (SELECT 1 FROM dbo.vwРеальноеРасположениеОборудования x WHERE x.КодОборудования=a.КодОборудования AND x.ВремяПроверки>a.ВремяПроверки)
+              AND NOT EXISTS (SELECT 1 FROM dbo.ОборудованиеРасположение r WHERE r.КодОборудования=a.КодОборудования AND r.От>a.ВремяПроверки)
+        )
+        SELECT COALESCE(b.Id,a.Id) AS Id, COALESCE(b.Name,a.Name) AS Name, a.CheckedAt, a.LocationId, a.LocationName,
+               ISNULL(a.Broken,0) AS Broken, ISNULL(a.Notes,'') AS Notes
+        FROM Booked b FULL JOIN Observed a ON a.Id=b.Id
+        WHERE (@ResponsibleId IS NULL OR EXISTS (SELECT 1 FROM dbo.vwОборудованиеСписок x WHERE x.КодОборудования=b.Id AND x.КодСотрудника=@ResponsibleId))
+        ORDER BY COALESCE(b.Name,a.Name), CASE WHEN b.FromUtc<a.CheckedAt THEN a.CheckedAt END, COALESCE(b.Id,a.Id);
+        """;
+
+    /// <summary>Поиск по штатной функции, с IT-фильтром для конкретной найденной строки.</summary>
+    public const string SELECT_LocationFactEquipment = """
+        SELECT TOP (@Limit) f.КодОборудования AS Id, f.Найдено AS MatchText, f.Оборудование AS Name,
+               f.SN AS SerialNumber, f.Владелец AS OwnerName, f.ИнвентарныйНомер AS InventoryNumber
+        FROM dbo.fn_ПоискОборудования(@Search) f
+        JOIN dbo.vwОборудование e ON e.КодОборудования=f.КодОборудования AND e.Списано IS NULL
+        JOIN dbo.МоделиОборудования m ON m.КодМоделиОборудования=e.КодМоделиОборудования
+        WHERE (@ItOnly=0 OR m.КодТипаОборудования<100) AND (@EquipmentId IS NULL OR e.КодОборудования=@EquipmentId)
+        ORDER BY f.КодОборудования;
+        """;
+
+    /// <summary>Контекст подтверждения. Подсказка блокировки используется только при записи.</summary>
+    public const string SELECT_LocationFactContext = """
+        SELECT e.КодОборудования AS EquipmentId, e.КодЛицаВладельца AS OwnerId, ISNULL(o.Кличка,'') AS OwnerName,
+               ISNULL(NULLIF(e.СетевоеИмя,'')+' ','')+ISNULL(m.МодельОборудования,'')+ISNULL(' SN: '+NULLIF(e.SN,''),'') AS FactName,
+               ISNULL(b.ИнвентарныйНомер,'') AS InventoryNumber, r.КодРасположения AS BookedLocationId,
+               ISNULL(l.РасположениеPath1,'') AS BookedLocationName, r.От AS BookedFromUtc, e.Изменено AS EquipmentChangedAt
+        FROM dbo.vwОборудование e {0}
+        JOIN dbo.МоделиОборудования m ON m.КодМоделиОборудования=e.КодМоделиОборудования
+        LEFT JOIN dbo.ЛицаЗаказчики o ON o.КодЛица=e.КодЛицаВладельца
+        OUTER APPLY (SELECT TOP (1) r.КодРасположения,r.От FROM dbo.ОборудованиеРасположение r {0}
+                     WHERE r.КодОборудования=e.КодОборудования ORDER BY r.От DESC) r
+        LEFT JOIN dbo.vwРасположения l ON l.КодРасположения=r.КодРасположения
+        OUTER APPLY (SELECT TOP (1) b.ИнвентарныйНомер FROM dbo.ОборудованиеБухУчета b
+                     WHERE b.КодОборудования=e.КодОборудования AND b.До IS NULL ORDER BY b.От DESC,b.КодОборудованияБухУчета DESC) b
+        WHERE e.КодОборудования=@EquipmentId AND e.Списано IS NULL;
+        """;
+
+    /// <summary>Штатная запись проверки и контроль результата через то же представление.</summary>
+    public const string INSERT_LocationFact = """
+        INSERT dbo.vwРеальноеРасположениеОборудования(ВремяПроверки,КодОборудования,Оборудование,КодРасположения,СломаноРемонтуНеПодлежит,Примечание)
+        VALUES(@CheckedAt,@EquipmentId,@FactName,@LocationId,@Broken,@Notes);
+        SELECT COUNT(*) FROM dbo.vwРеальноеРасположениеОборудования
+        WHERE КодОборудования=@EquipmentId AND КодРасположения=@LocationId AND ВремяПроверки=@CheckedAt;
+        """;
+
+    /// <summary>Фактические права SQL и время для двух записей одной операции.</summary>
+    public const string SELECT_LocationFactWriteAccess = """
+        SELECT GETUTCDATE() AS NowUtc,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwРеальноеРасположениеОборудования','OBJECT','INSERT'),0)) AS CanConfirm,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.ОборудованиеРасположение','OBJECT','INSERT'),0)) AS CanMove;
+        """;
+
     /// <summary>Определения доступных пользователю разделов отчёта.</summary>
     public const string SELECT_ModificationReports = """
         SELECT КодЗапроса AS Id, Запрос AS Name, [SQL] AS [Sql], Форма AS FormReference
