@@ -1,0 +1,82 @@
+using System.Data;
+using System.Globalization;
+using Clayzor.Lib.DALC;
+using Dapper;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
+
+namespace Clayzor.Lib.Entities.DynamicGrid;
+
+/// <summary>Серверное определение раздела отчёта.</summary>
+public sealed record ModificationReportDefinition(int Id, string Name, string? Sql, string? FormReference);
+
+/// <summary>Страница строк со схемой исходного SELECT.</summary>
+public sealed record ModificationReportPage(IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, long Total);
+
+/// <summary>Чтение разделов отчёта из авторизованного SQL-каталога Inventory.</summary>
+public static class ModificationReportData
+{
+    /// <summary>Доступные определения, отсортированные по названию.</summary>
+    public static Task<IEnumerable<ModificationReportDefinition>> ListAsync(DbManager db, CancellationToken ct = default) =>
+        db.QueryRequiredAsync<ModificationReportDefinition>(SQLQueries.SELECT_ModificationReports, cancellationToken: ct);
+
+    /// <summary>Выполняет один разрешённый раздел, сохраняя схему пустого результата.</summary>
+    public static async Task<ModificationReportPage> ReadAsync(DbManager db, ModificationReportDefinition definition,
+        DateTime from, DateTime to, int? employeeId, int page, int size, CancellationToken ct)
+    {
+        if (from.Date > to.Date || page < 1 || size is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(page));
+        var sql = ValidateSelect(definition.Sql);
+        var schemaSql = string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ModificationReportSchema, sql);
+        var filtered = string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ModificationReportFiltered, sql);
+        return await db.RunDbAsync(async connection =>
+        {
+            List<string> fields = [];
+            await using (var reader = await connection.ExecuteReaderAsync(new CommandDefinition(schemaSql, cancellationToken: ct)))
+                for (var i = 0; i < reader.FieldCount; i++) fields.Add(reader.GetName(i));
+            if (!fields.Contains("Изменено", StringComparer.OrdinalIgnoreCase) || !fields.Contains("Изменил", StringComparer.OrdinalIgnoreCase) ||
+                fields.Contains("__clay_report_row", StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException("В SQL раздела отсутствуют колонки Изменено или Изменил либо занято служебное имя.");
+
+            var key = "[" + fields[0].Replace("]", "]]", StringComparison.Ordinal) + "]";
+            var pageSql = string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ModificationReportPage, filtered, key);
+            var parameters = new DynamicParameters();
+            parameters.Add("DateFrom", from.Date, DbType.Date);
+            parameters.Add("DateTo", to.Date, DbType.Date);
+            parameters.Add("EmployeeId", employeeId, DbType.Int32);
+            parameters.Add("FirstRow", (page - 1L) * size + 1);
+            parameters.Add("LastRow", (long)page * size);
+
+            using var result = await connection.QueryMultipleAsync(new CommandDefinition(pageSql, parameters, cancellationToken: ct));
+            var total = await result.ReadSingleAsync<long>();
+            var rows = (await result.ReadAsync()).Select(row => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>(
+                (IDictionary<string, object?>)row, StringComparer.OrdinalIgnoreCase)).ToList();
+            return new ModificationReportPage(fields, rows, total);
+        });
+    }
+
+    internal static string ValidateSelect(string? source)
+    {
+        var sql = source?.Trim().TrimEnd(';').TrimEnd();
+        if (string.IsNullOrWhiteSpace(sql)) throw new InvalidDataException("Не указан SQL раздела.");
+        var wrapped = string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ModificationReportSchema, sql);
+        using var text = new StringReader(wrapped);
+        var parsed = new TSql100Parser(initialQuotedIdentifiers: true).Parse(text, out var errors);
+        if (errors.Count > 0 || parsed is not TSqlScript { Batches: [ { Statements: [SelectStatement] } ] })
+            throw new InvalidDataException("SQL раздела должен быть одним SELECT, допустимым в подзапросе SQL Server 2008 R2.");
+        var guard = new ReportSelectGuard();
+        parsed.Accept(guard);
+        if (guard.Rejected) throw new InvalidDataException("SQL раздела содержит недопустимую конструкцию.");
+        return sql;
+    }
+
+    private sealed class ReportSelectGuard : TSqlFragmentVisitor
+    {
+        public bool Rejected { get; private set; }
+        public override void Visit(SelectStatement node) => Rejected |= node.Into is not null;
+        public override void Visit(SelectSetVariable node) => Rejected = true;
+        public override void Visit(OpenRowsetTableReference node) => Rejected = true;
+        public override void Visit(BulkOpenRowset node) => Rejected = true;
+        public override void Visit(OpenQueryTableReference node) => Rejected = true;
+        public override void Visit(AdHocTableReference node) => Rejected = true;
+        public override void Visit(SchemaObjectName node) => Rejected |= node.ServerIdentifier is not null;
+    }
+}
