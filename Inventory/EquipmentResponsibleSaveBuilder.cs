@@ -11,6 +11,7 @@ internal static class EquipmentResponsibleSaveBuilder
         EquipmentResponsiblePeriod? next,
         EquipmentLocationPeriod? location)
     {
+        Validate(current, next, location);
         var parameters = new DynamicParameters();
         parameters.Add("@КодОборудования", current.EquipmentId, DbType.Int32);
         parameters.Add("@От", location?.FromUtc ?? next?.FromUtc ?? current.FromUtc, DbType.DateTime);
@@ -66,5 +67,20 @@ internal static class EquipmentResponsibleSaveBuilder
         sql.AppendLine("    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);");
         sql.AppendLine("END CATCH;");
         return new EquipmentPhoneSaveCommand(sql.ToString(), parameters);
+    }
+
+    private static void Validate(
+        EquipmentResponsiblePeriod current,
+        EquipmentResponsiblePeriod? next,
+        EquipmentLocationPeriod? location)
+    {
+        if (current.EquipmentId <= 0 || current.EmployeeId <= 0 || current.FromUtc == default)
+            throw new InvalidOperationException("Не указаны оборудование, сотрудник или начало текущего периода.");
+        if (next is not null &&
+            (next.EquipmentId != current.EquipmentId || next.EmployeeId <= 0 || next.FromUtc == default))
+            throw new InvalidOperationException("Следующий ответственный не соответствует оборудованию или имеет недопустимую дату выдачи.");
+        if (location is not null &&
+            (location.EquipmentId != current.EquipmentId || location.LocationId <= 0 || location.FromUtc == default))
+            throw new InvalidOperationException("Новое расположение не соответствует оборудованию или имеет недопустимую дату.");
     }
 }

@@ -601,12 +601,43 @@ WHERE P.КодОборудования = @EquipmentId
   AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X
                   WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)";
 
+    /// <summary>Проверка фактических before-значений связи внутри транзакции. Формат: параметры всех исходных полей.</summary>
+    public const string GUARD_ИсходнаяТелефоннаяСвязь = @"
+IF NOT EXISTS (SELECT 1 FROM ТелефонныеНомераОборудование WITH (UPDLOCK, HOLDLOCK)
+               WHERE КодТелефонногоНомера = {0} AND КодОборудования = @КодОборудования
+                 AND (КодОборудованияПодключения = {1} OR (КодОборудованияПодключения IS NULL AND {1} IS NULL))
+                 AND ISNULL(НомерАвтонабора, '') = {2}
+                 AND (ЗадержкаАвтонабора = {3} OR (ЗадержкаАвтонабора IS NULL AND {3} IS NULL))
+                 AND Основной = {4}
+                 AND (СрокВозврата = {5} OR (СрокВозврата IS NULL AND {5} IS NULL))
+                 AND ISNULL(Примечание, '') = {6})
+    RAISERROR('Исходная телефонная связь была изменена или удалена. Обновите данные и повторите операцию.', 16, 1);";
+
     /// <summary>Удаление подтверждённой связи номера с оборудованием. Формат: параметр номера.</summary>
     public const string DELETE_ОборудованиеТелефона = @"
 DELETE FROM ТелефонныеНомераОборудование
 WHERE КодТелефонногоНомера = {0} AND КодОборудования = @КодОборудования;
 IF @@ROWCOUNT <> 1
     RAISERROR('Исходная телефонная связь не найдена. Изменения отменены.', 16, 1);";
+
+    /// <summary>Обновление связи и CAS по фактическим before-значениям. Формат: after- и before-параметры.</summary>
+    public const string UPDATE_ОборудованиеТелефонаСвязи = @"
+UPDATE ТелефонныеНомераОборудование
+SET КодОборудованияПодключения = {1},
+    НомерАвтонабора = {2},
+    ЗадержкаАвтонабора = {3},
+    Основной = {4},
+    СрокВозврата = {5},
+    Примечание = {6}
+WHERE КодТелефонногоНомера = {0} AND КодОборудования = @КодОборудования
+  AND (КодОборудованияПодключения = {7} OR (КодОборудованияПодключения IS NULL AND {7} IS NULL))
+  AND ISNULL(НомерАвтонабора, '') = {8}
+  AND (ЗадержкаАвтонабора = {9} OR (ЗадержкаАвтонабора IS NULL AND {9} IS NULL))
+  AND Основной = {10}
+  AND (СрокВозврата = {11} OR (СрокВозврата IS NULL AND {11} IS NULL))
+  AND ISNULL(Примечание, '') = {12};
+IF @@ROWCOUNT <> 1
+    RAISERROR('Исходная телефонная связь была изменена или удалена. Изменения отменены.', 16, 1);";
 
     /// <summary>Обновление срока возврата связи. Формат: параметры номера, срока и примечания.</summary>
     public const string UPDATE_ОборудованиеТелефонаСрокВозврата = @"
@@ -1189,7 +1220,7 @@ FROM (
 WHERE @Search = '' OR T0.Лицо LIKE '%' + @Search + '%'
 ORDER BY T0.Компания DESC, T0.Лицо";
 
-    /// <summary>Read-only предупреждение о соответствии выбранного лица ПДн договору и активному техническому тарифу.</summary>
+    /// <summary>Read-only предупреждение ПДн. Параметры: EquipmentId, ContractId, PersonId, TechnicalTariffs, BusinessToday.</summary>
     public const string SELECT_ЛицоПерсональныхДанныхСоответствие = @"
 ;WITH ТарифныеПланы(КодТипаДопУслугиСотОператора) AS (
     SELECT word -- шаблон технического тарифа
@@ -1200,8 +1231,8 @@ ORDER BY T0.Компания DESC, T0.Лицо";
     FROM vwSIMКартыДопУслугиСотОператора U
     WHERE EXISTS (SELECT 1 FROM ТарифныеПланы T
                   WHERE U.КодТипаДопУслугиСотОператора LIKE T.КодТипаДопУслугиСотОператора + '%')
-      AND U.От < GETDATE()
-      AND (U.До IS NULL OR U.До > GETDATE())
+      AND U.От < DATEADD(day, 1, @BusinessToday)
+      AND (U.До IS NULL OR U.До > @BusinessToday)
 )
 SELECT CASE
     WHEN D.КодДокумента IS NULL THEN -1 -- договор не найден
@@ -1237,7 +1268,7 @@ SELECT КодЛица -- идентификатор лица
 FROM Сотрудники
 WHERE КодСотрудника = @EmployeeId";
 
-    /// <summary>Дополнительные услуги текущей SIM. Параметры: EquipmentId, ShowHistory, ShowRequired.</summary>
+    /// <summary>Дополнительные услуги текущей SIM. Параметры: EquipmentId, ShowHistory, ShowRequired, BusinessToday.</summary>
     public const string SELECT_SIMКартыДопУслугиСотОператора_КодОборудования = @"
 SELECT U.КодSIMКартыДопУслугиСотОператора, -- идентификатор записи
        U.НомерТелефона, -- номер телефона
@@ -1265,7 +1296,7 @@ LEFT JOIN SIMКартыДопУслугиСотОператораОбязате�
 LEFT JOIN Сотрудники CH ON U.Изменил = CH.КодСотрудника
 WHERE EXISTS (SELECT 1 FROM vwSIMКарты S
               WHERE S.НомерТелефона = U.НомерТелефона AND S.КодОборудования = @EquipmentId)
-  AND (@ShowHistory = 1 OR U.До IS NULL OR U.До > GETDATE())
+  AND (@ShowHistory = 1 OR U.До IS NULL OR U.До > @BusinessToday)
   AND (@ShowRequired = 1 OR T.КодОбязательнойУслугиДляКомпании IS NULL OR T.КодОбязательнойУслугиДляКомпании < 0)
 ORDER BY T.ТарифныйПлан DESC,
          CASE WHEN U.КодТипаДопУслугиСотОператора = '_BLOCK' THEN 0 ELSE 1 END,

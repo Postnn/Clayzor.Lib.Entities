@@ -11,22 +11,36 @@ internal static class EquipmentPhoneSaveBuilder
         IReadOnlyCollection<EquipmentPhoneLink> original,
         IReadOnlyCollection<EquipmentPhoneLink> current)
     {
+        ValidateDiff(equipment.Id, original, current);
         var parameters = new DynamicParameters();
         parameters.AddDynamicParams(equipment.CreateUpdateParameters());
         equipment.AddUpdateConcurrencyParameter(parameters);
+        parameters.Add("@ОжидаемоеКоличествоСвязей", original.Count, DbType.Int32);
         var sql = new StringBuilder();
         sql.AppendLine("SET NOCOUNT ON;");
         sql.AppendLine("SET XACT_ABORT ON;");
         sql.AppendLine("BEGIN TRY");
         sql.AppendLine("    BEGIN TRANSACTION;");
+        sql.AppendLine("    IF (SELECT COUNT(*) FROM ТелефонныеНомераОборудование WITH (UPDLOCK, HOLDLOCK)");
+        sql.AppendLine("        WHERE КодОборудования = @КодОборудования) <> @ОжидаемоеКоличествоСвязей");
+        sql.AppendLine("        RAISERROR('Телефонные связи были изменены другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
+        var index = 0;
+        foreach (var item in original.OrderBy(item => item.PhoneId))
+        {
+            var prefix = $"before{index++}";
+            AddLinkParameters(parameters, prefix, item);
+            sql.AppendLine(string.Format(SQLQueries.GUARD_ИсходнаяТелефоннаяСвязь,
+                Parameter(prefix, "Phone"), Parameter(prefix, "Connection"), Parameter(prefix, "AutoDial"),
+                Parameter(prefix, "Delay"), Parameter(prefix, "Default"), Parameter(prefix, "Return"),
+                Parameter(prefix, "Notes")));
+        }
+
         sql.AppendLine(SQLQueries.UPDATE_Оборудование);
         sql.AppendLine("    IF @@ROWCOUNT <> 1 RAISERROR('Запись оборудования была изменена или удалена другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
 
         var originalIds = original.Select(item => item.PhoneId).ToHashSet();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
-        if (originalIds.Count != original.Count || currentIds.Count != current.Count)
-            throw new InvalidOperationException("Телефонный номер не может быть добавлен дважды.");
-        var index = 0;
+        index = 0;
         foreach (var phoneId in originalIds.Where(id => !currentIds.Contains(id)).Order())
         {
             var phoneParameter = $"@delPhone{index++}";
@@ -37,17 +51,18 @@ internal static class EquipmentPhoneSaveBuilder
         var originalById = original.ToDictionary(item => item.PhoneId);
         index = 0;
         foreach (var item in current.Where(item => originalById.TryGetValue(item.PhoneId, out var source) &&
-                     (item.ReturnDate != source.ReturnDate ||
-                      (item.Notes ?? string.Empty) != (source.Notes ?? string.Empty))).OrderBy(item => item.PhoneId))
+                     HasChanges(source, item)).OrderBy(item => item.PhoneId))
         {
-            var phoneParameter = $"@updPhone{index}";
-            var returnParameter = $"@updReturn{index}";
-            var notesParameter = $"@updNotes{index}";
-            parameters.Add(phoneParameter, item.PhoneId, DbType.Int32);
-            parameters.Add(returnParameter, item.ReturnDate, DbType.DateTime);
-            parameters.Add(notesParameter, item.Notes ?? string.Empty, DbType.String, size: 300);
-            sql.AppendLine(string.Format(SQLQueries.UPDATE_ОборудованиеТелефонаСрокВозврата,
-                phoneParameter, returnParameter, notesParameter));
+            var source = originalById[item.PhoneId];
+            var prefix = $"update{index}";
+            AddLinkParameters(parameters, prefix, item);
+            AddOriginalLinkParameters(parameters, prefix, source);
+            sql.AppendLine(string.Format(SQLQueries.UPDATE_ОборудованиеТелефонаСвязи,
+                Parameter(prefix, "Phone"), Parameter(prefix, "Connection"), Parameter(prefix, "AutoDial"),
+                Parameter(prefix, "Delay"), Parameter(prefix, "Default"), Parameter(prefix, "Return"),
+                Parameter(prefix, "Notes"), Parameter(prefix, "OldConnection"), Parameter(prefix, "OldAutoDial"),
+                Parameter(prefix, "OldDelay"), Parameter(prefix, "OldDefault"), Parameter(prefix, "OldReturn"),
+                Parameter(prefix, "OldNotes")));
             index++;
         }
 
@@ -78,6 +93,52 @@ internal static class EquipmentPhoneSaveBuilder
         sql.AppendLine("END CATCH;");
         return new EquipmentPhoneSaveCommand(sql.ToString(), parameters);
     }
+
+    private static void ValidateDiff(
+        int equipmentId,
+        IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        if (equipmentId <= 0 || original.Concat(current).Any(item => item.EquipmentId != equipmentId || item.PhoneId <= 0))
+            throw new InvalidOperationException("Телефонная связь не принадлежит сохраняемому оборудованию.");
+        if (original.Select(item => item.PhoneId).Distinct().Count() != original.Count ||
+            current.Select(item => item.PhoneId).Distinct().Count() != current.Count)
+            throw new InvalidOperationException("Телефонный номер не может быть добавлен дважды.");
+    }
+
+    private static bool HasChanges(EquipmentPhoneLink source, EquipmentPhoneLink target) =>
+        source.ConnectionEquipmentId != target.ConnectionEquipmentId ||
+        source.AutoDialNumber != target.AutoDialNumber ||
+        source.AutoDialDelay != target.AutoDialDelay ||
+        source.IsDefault != target.IsDefault ||
+        source.ReturnDate != target.ReturnDate ||
+        (source.Notes ?? string.Empty) != (target.Notes ?? string.Empty);
+
+    private static void AddLinkParameters(DynamicParameters parameters, string prefix, EquipmentPhoneLink item)
+    {
+        parameters.Add(Parameter(prefix, "Phone"), item.PhoneId, DbType.Int32);
+        parameters.Add(Parameter(prefix, "Connection"), item.ConnectionEquipmentId is 0 ? null : item.ConnectionEquipmentId, DbType.Int32);
+        parameters.Add(Parameter(prefix, "AutoDial"), item.AutoDialNumber ?? string.Empty, DbType.String);
+        parameters.Add(Parameter(prefix, "Delay"), item.AutoDialDelay, DbType.Byte);
+        parameters.Add(Parameter(prefix, "Default"), item.IsDefault, DbType.Boolean);
+        parameters.Add(Parameter(prefix, "Return"), item.ReturnDate, DbType.DateTime);
+        parameters.Add(Parameter(prefix, "Notes"), item.Notes ?? string.Empty, DbType.String, size: 300);
+    }
+
+    private static void AddOriginalLinkParameters(DynamicParameters parameters, string prefix, EquipmentPhoneLink item)
+    {
+        parameters.Add(Parameter(prefix, "OldConnection"), item.ConnectionEquipmentId is 0 ? null : item.ConnectionEquipmentId, DbType.Int32);
+        parameters.Add(Parameter(prefix, "OldAutoDial"), item.AutoDialNumber ?? string.Empty, DbType.String);
+        parameters.Add(Parameter(prefix, "OldDelay"), item.AutoDialDelay, DbType.Byte);
+        parameters.Add(Parameter(prefix, "OldDefault"), item.IsDefault, DbType.Boolean);
+        parameters.Add(Parameter(prefix, "OldReturn"), item.ReturnDate, DbType.DateTime);
+        parameters.Add(Parameter(prefix, "OldNotes"), item.Notes ?? string.Empty, DbType.String, size: 300);
+    }
+
+    private static string Parameter(string prefix, string name) => $"@{prefix}{name}";
 }
 
-internal sealed record EquipmentPhoneSaveCommand(string Sql, DynamicParameters Parameters);
+/// <summary>Параметризованная SQL-команда сохранения связанной записи оборудования.</summary>
+/// <param name="Sql">SQL Server 2008 R2 текст с транзакцией и rollback.</param>
+/// <param name="Parameters">Dapper-параметры, включая exact baseline.</param>
+public sealed record EquipmentPhoneSaveCommand(string Sql, DynamicParameters Parameters);
