@@ -6,6 +6,31 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    /// <summary>Определения доступных пользователю разделов отчёта.</summary>
+    public const string SELECT_ModificationReports = """
+        SELECT КодЗапроса AS Id, Запрос AS Name, [SQL] AS [Sql], Форма AS FormReference
+        FROM dbo.ЗапросыИзмененияБД ORDER BY Запрос, КодЗапроса;
+        """;
+
+    /// <summary>Схема SQL-определения отчёта, включая пустой результат.</summary>
+    public const string SELECT_ModificationReportSchema = "SELECT TOP (0) * FROM ({0}) AS p";
+
+    /// <summary>Фильтрация отчёта по календарным датам хранения и автору.</summary>
+    public const string SELECT_ModificationReportFiltered = """
+        SELECT p.* FROM ({0}) AS p
+        WHERE CONVERT(date, p.[Изменено]) BETWEEN @DateFrom AND @DateTo
+          AND (@EmployeeId IS NULL OR p.[Изменил]=@EmployeeId)
+        """;
+
+    /// <summary>Количество строк и одна страница раздела отчёта.</summary>
+    public const string SELECT_ModificationReportPage = """
+        SELECT COUNT_BIG(*) FROM ({0}) AS p;
+        SELECT * FROM (
+            SELECT p.*, ROW_NUMBER() OVER (ORDER BY p.[Изменено] DESC, p.{1}, p.[Изменил]) AS __clay_report_row
+            FROM ({0}) AS p
+        ) AS ranked WHERE __clay_report_row BETWEEN @FirstRow AND @LastRow ORDER BY __clay_report_row;
+        """;
+
     /// <summary>Снимок прав на действия с FMTN через штатное представление.</summary>
     public const string SELECT_SimFmtnAccess = """
         SELECT CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwSIMКартыFMTN','OBJECT','SELECT'),0)) AS CanRead,
