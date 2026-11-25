@@ -52,6 +52,7 @@ internal static class MemoryTypeColumns
 
 internal static class EmployeeColumns
 {
+    public const string Язык = "Язык";
     public const string КодСотрудника = "КодСотрудника";
     public const string Сотрудник = "Сотрудник";
     public const string Employee = "Employee";

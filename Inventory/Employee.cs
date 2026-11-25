@@ -43,6 +43,14 @@ public sealed class Employee : ILookupEntity
     [Column(EmployeeColumns.Employee)]
     public string? NameEn { get; set; }
 
+    /// <summary>Язык, сохранённый для текущего сотрудника.</summary>
+    [Column(EmployeeColumns.Язык)]
+    public string? Language { get; set; }
+
+    /// <summary>Русский язык используется при отсутствии сохранённого языка.</summary>
+    public bool PrefersRussian => string.IsNullOrWhiteSpace(Language) ||
+        string.Equals(Language.Trim(), "ru", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Организация сотрудника.</summary>
     [Column(EmployeeColumns.КодЛицаЗаказчика)]
     public int? OrganizationId { get; set; }

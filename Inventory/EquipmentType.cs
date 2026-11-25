@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations.Schema;
+using Clayzor.Lib.DALC;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -6,6 +7,17 @@ namespace Clayzor.Lib.Entities.Inventory;
 [Table("ТипыОборудования")]
 public sealed class EquipmentType : ILookupEntity
 {
+    /// <summary>Имя ключа типа в метаданных списка моделей.</summary>
+    public const string IdColumnName = EquipmentTypeColumns.КодТипаОборудования;
+
+    /// <summary>Загружает весь справочник для меню типов в стабильном порядке по коду.</summary>
+    public static Task<IEnumerable<EquipmentType>> ReadMenuAsync(DbManager db, CancellationToken cancellationToken = default) =>
+        db.QueryRequiredAsync<EquipmentType>(SQLQueries.SELECT_ТипыОборудованияДляМеню, null, cancellationToken);
+
+    /// <summary>Возвращает название на языке сотрудника с резервным русским названием.</summary>
+    public string GetMenuName(Employee employee) => employee.PrefersRussian || string.IsNullOrWhiteSpace(NameEn)
+        ? Name : NameEn;
+
     /// <summary>Идентификатор типа оборудования.</summary>
     [Column(EquipmentTypeColumns.КодТипаОборудования)]
     public int Id { get; set; }

@@ -17,15 +17,6 @@ public enum ТипыТерриитории
     Объединение_стран = 5,
 }
 
-/// <summary>Справочник dbo.Запросы, ключ КодЗапроса.</summary>
-public enum Запросы
-{
-    /// <summary>Территории.</summary>
-    Территории = 1030,
-    /// <summary>Телефонные коды.</summary>
-    Телефонные_коды = 9993,
-}
-
 /// <summary>Запись справочника типов с оригинальной подписью.</summary>
 public sealed record TerritorialEntityOption(int Id, string Name) : ILookupEntity;
 
