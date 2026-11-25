@@ -22,7 +22,13 @@ public static class PhoneNumberQuery
             parameters.Add(name, ids[index]);
             names.Add(name);
         }
-        var predicate = $"   AND T0.КодТелефонногоНомера NOT IN ({string.Join(", ", names)})";
+        AddPredicate(sql, $"AND T0.КодТелефонногоНомера NOT IN ({string.Join(", ", names)})");
+    }
+
+    internal static void AddSelectedId(StringBuilder sql) => AddPredicate(sql, "AND T0.КодТелефонногоНомера = @SelectedPhoneId");
+
+    internal static void AddPredicate(StringBuilder sql, string predicate)
+    {
         var orderByIndex = sql.ToString().LastIndexOf("ORDER BY", StringComparison.OrdinalIgnoreCase);
         if (orderByIndex >= 0)
         {

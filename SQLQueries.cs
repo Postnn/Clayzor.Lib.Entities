@@ -820,6 +820,38 @@ INSERT INTO ТелефонныеНомераОборудование
     (КодТелефонногоНомера, КодОборудования, КодОборудованияПодключения, СрокВозврата, Примечание)
 VALUES ({0}, @КодОборудования, {1}, {2}, {3})";
 
+    /// <summary>Общий источник допустимых номеров телефона оборудования.</summary>
+    public const string PhoneNumberCandidateSource = "dbo.fn_НомераДляТелАппаратов(@LocationId, @EmployeeId, @EquipmentTypeId, @PhoneIdBase, @EquipmentId)";
+
+    /// <summary>Полная проекция FinderTel с ограничением видимости по рабочему представлению номеров.</summary>
+    public const string SELECT_FinderTel = """
+        SELECT F.КодТелефонногоНомера AS Id,F.ТелефонныйНомер AS ShortNumber,F.ПолныйНомер AS FullNumber,
+               F.КодТипаТелефонныхНомеров AS PhoneTypeId,F.Абонент AS Subscriber,F.КодОборудованияПодключения AS ConnectionEquipmentId
+        FROM
+        """ + " " + PhoneNumberCandidateSource + """
+         F
+        JOIN dbo.vwТелефонныеНомераИзменение T0 ON T0.КодТелефонногоНомера=F.КодТелефонногоНомера
+        WHERE 1=1
+        """;
+
+    /// <summary>Один проход справочника иконок и имён типов номеров.</summary>
+    public const string SELECT_FinderTelTypes = """
+        SELECT КодТипаТелефонныхНомеров AS Id,ТипТелефонныхНомеров AS Name,icon AS Icon
+        FROM dbo.ТипыТелефонныхНомеров;
+        """;
+
+    /// <summary>Размер и страница списка выбора с серверной сортировкой.</summary>
+    public const string SELECT_FinderPage = """
+        SELECT COUNT(*) FROM ({0}) filtered;
+        SELECT ranked.* FROM (SELECT filtered.*, ROW_NUMBER() OVER (ORDER BY {1}) AS __row FROM ({0}) filtered) ranked
+        WHERE ranked.__row BETWEEN @FirstRow AND @LastRow ORDER BY ranked.__row;
+        """;
+
+    /// <summary>Уникальные значения колонки без собственной фильтрации.</summary>
+    public const string SELECT_FinderDistinct = """
+        SELECT TOP (@Limit) v FROM (SELECT DISTINCT {1} AS v FROM ({0}) filtered) valueset ORDER BY v;
+        """;
+
     /// <summary>Поиск телефонных номеров. Параметры legacy-функции, Search, LimitPlusOne и исключённые ID.</summary>
     public const string SELECT_ТелефонныеНомераДляВыбора = @"
 SELECT TOP (@LimitPlusOne)
@@ -830,7 +862,7 @@ SELECT TOP (@LimitPlusOne)
              '#' + CONVERT(varchar, T0.КодТелефонногоНомера)) AS Телефон, -- отображаемое имя
        T0.КодТелефоннойСтанции, -- идентификатор АТС
        ISNULL(S.XorcomName, '') AS XorcomName -- признак Xorcom
-FROM dbo.fn_НомераДляТелАппаратов(@LocationId, @EmployeeId, @EquipmentTypeId, @PhoneIdBase, @EquipmentId) F
+FROM " + PhoneNumberCandidateSource + @" F
 INNER JOIN vwТелефонныеНомераИзменение T0 ON T0.КодТелефонногоНомера = F.КодТелефонногоНомера
 LEFT JOIN Сотрудники E ON E.КодСотрудника = T0.КодСотрудника
 LEFT JOIN ТелефонныеСтанции S ON S.КодТелефоннойСтанции = T0.КодТелефоннойСтанции
@@ -2418,6 +2450,20 @@ FROM vwТелефонныеНомераИзменение P
 LEFT JOIN Сотрудники E ON E.КодСотрудника = P.КодСотрудника
 WHERE P.КодТелефонногоНомера = @Id";
 
+    /// <summary>Общий источник допустимого оборудования для телефонного номера.</summary>
+    public const string PhoneEquipmentCandidateSource = "dbo.fn_ОборудованиеДляТелНомера(@PhoneTypeId, @StationId, @SocketId, @EmployeeId, @PhoneId)";
+
+    /// <summary>Полная проекция функции Finder с ограничением видимости оборудования.</summary>
+    public const string SELECT_FinderEquipment = """
+        SELECT F.КодОборудования AS EquipmentId,F.SN AS SerialNumber,F.МодельОборудования AS Model,
+               F.РасположениеPath AS LocationPath,F.КодОборудованияПодключения AS ConnectionEquipmentId
+        FROM
+        """ + " " + PhoneEquipmentCandidateSource + """
+         F
+        JOIN dbo.vwОборудование E ON E.КодОборудования=F.КодОборудования
+        WHERE 1=1
+        """;
+
     /// <summary>Оборудование, доступное номеру. Параметры функции, Search, LimitPlusOne и исключённое оборудование.</summary>
     public const string SELECT_ТелефонОборудованиеДляВыбора = @"
 SELECT TOP (@LimitPlusOne) F.КодОборудования, -- оборудование
@@ -2429,7 +2475,7 @@ SELECT TOP (@LimitPlusOne) F.КодОборудования, -- оборудов
        T.ЕстьТелефонныйНомер, -- поддерживаемый тип номера
        '[#' + CONVERT(varchar, F.КодОборудования) + '] ' + F.МодельОборудования + '; ' + F.РасположениеPath
            + '; SN: ' + F.SN + ISNULL('; оборудование подключения: ' + CONVERT(varchar, F.КодОборудованияПодключения), '') AS Название -- имя
-FROM dbo.fn_ОборудованиеДляТелНомера(@PhoneTypeId, @StationId, @SocketId, @EmployeeId, @PhoneId) F
+FROM " + PhoneEquipmentCandidateSource + @" F
 INNER JOIN vwОборудование E ON E.КодОборудования = F.КодОборудования
 INNER JOIN МоделиОборудования M ON M.КодМоделиОборудования = E.КодМоделиОборудования
 INNER JOIN ТипыОборудования T ON T.КодТипаОборудования = M.КодТипаОборудования
