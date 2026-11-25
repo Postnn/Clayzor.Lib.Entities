@@ -3321,4 +3321,47 @@ ELSE
         EXEC ЗаявкиIT.dbo.sp_НерабочиеДниIns @КодСотрудника = @employeeId,
             @От = @timeOff, @До = @next, @Описание = N'Отгул за дежурство';
         """;
+
+    /// <summary>Разрешения на операции с представлением значений атрибутов пула.</summary>
+    internal const string SELECT_АтрибутПулаПрава = """
+        SELECT CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','SELECT'),0)) AS CanRead,
+               CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','INSERT'),0)) AS CanInsert,
+               CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','UPDATE'),0)) AS CanUpdate,
+               CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','DELETE'),0)) AS CanDelete;
+        """;
+
+    /// <summary>Три набора данных — пул, тип, строка значения с аудитом. Режим блокировки задаёт код Entities.</summary>
+    internal const string SELECT_АтрибутПулаКарточка = """
+        SELECT ПулТелефона FROM dbo.vwПулыТелефонов WHERE КодПулаТелефонов = @poolId;
+        SELECT ТипАтрибутаТелефона AS [Type], Описание AS [Description]
+        FROM dbo.ТипыАтрибутовТелефонов
+        WHERE ТипАтрибутаТелефона = CONVERT(varchar(50), @type COLLATE Cyrillic_General_CI_AS);
+        SELECT a.Значение AS [Value], a.Изменил AS ChangedBy, a.Изменено AS ChangedAt, e.Сотрудник AS ChangedByName
+        FROM dbo.vwАтрибутыТелефоновПула a {0}
+        LEFT JOIN dbo.Сотрудники e ON e.КодСотрудника = a.Изменил
+        WHERE a.КодПулаТелефонов = @poolId AND a.ТипАтрибутаТелефона = CONVERT(varchar(50), @type COLLATE Cyrillic_General_CI_AS);
+        """;
+
+    /// <summary>Вставляет значение для пары и возвращает число изменённых строк.</summary>
+    internal const string INSERT_АтрибутПула = """
+        INSERT dbo.vwАтрибутыТелефоновПула (КодПулаТелефонов, ТипАтрибутаТелефона, Значение)
+        VALUES (@poolId, CONVERT(varchar(50), @type COLLATE Cyrillic_General_CI_AS),
+                        CONVERT(varchar(150), @value COLLATE Cyrillic_General_CI_AS));
+        SELECT @@ROWCOUNT;
+        """;
+
+    /// <summary>Меняет только значение одной пары и возвращает число изменённых строк.</summary>
+    internal const string UPDATE_АтрибутПула = """
+        UPDATE dbo.vwАтрибутыТелефоновПула
+        SET Значение = CONVERT(varchar(150), @value COLLATE Cyrillic_General_CI_AS)
+        WHERE КодПулаТелефонов = @poolId AND ТипАтрибутаТелефона = CONVERT(varchar(50), @type COLLATE Cyrillic_General_CI_AS);
+        SELECT @@ROWCOUNT;
+        """;
+
+    /// <summary>Удаляет одну пару и возвращает число затронутых строк.</summary>
+    internal const string DELETE_АтрибутПула = """
+        DELETE dbo.vwАтрибутыТелефоновПула
+        WHERE КодПулаТелефонов = @poolId AND ТипАтрибутаТелефона = CONVERT(varchar(50), @type COLLATE Cyrillic_General_CI_AS);
+        SELECT @@ROWCOUNT;
+        """;
 }
