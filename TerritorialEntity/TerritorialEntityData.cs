@@ -103,12 +103,19 @@ public static class TerritorialEntityData
         return db.QueryRequiredAsync<TerritorialEntityLookup>(sql.ToString(), parameters, ct);
     }
 
+    /// <summary>Читает личное состояние дерева территории по CLID.</summary>
     public static async Task<TerritoryViewState?> LoadViewStateAsync(DbManager db, int clid, CancellationToken ct) =>
         TerritoryViewState.Read((await db.QueryRequiredAsync<string>(TerritorialEntitySql.LoadViewState, new { Clid = clid }, ct)).SingleOrDefault());
 
+    /// <summary>Сохраняет личное состояние дерева через пользовательское представление.</summary>
     public static Task SaveViewStateAsync(DbManager db, int clid, TerritoryViewState state, CancellationToken ct) =>
         db.RunDbAsync(connection => connection.ExecuteAsync(new CommandDefinition(TerritorialEntitySql.SaveViewState,
             new { Clid = clid, Value = state.Serialize() }, cancellationToken: ct)));
+
+    /// <summary>Возвращает упорядоченную цепочку предков внутри разрешённой области.</summary>
+    public static async Task<IReadOnlyList<string>> ReadPathAsync(DbManager db, int id, IReadOnlyList<int>? roots, CancellationToken ct) =>
+        (await db.QueryRequiredAsync<int>(TerritorialEntitySql.TreePath, new { Id = id, Restricted = roots is not null, Roots = roots?.ToArray() ?? [] }, ct))
+            .Select(key => key.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray();
 
     /// <summary>Проверяет каждый возвращаемый ID в текущей области дерева, включая незагруженные узлы.</summary>
     public static async Task<bool> SelectionInScopeAsync(DbManager db, IReadOnlyCollection<int> ids, IReadOnlyList<int>? roots, CancellationToken ct)

@@ -102,6 +102,11 @@ internal static class TerritorialEntitySql
 
     private const string Children = "CONVERT(bit,CASE WHEN EXISTS (SELECT 1 FROM ScopeRows c WHERE c.ParentId=n.Id) THEN 1 ELSE 0 END) AS HasChildren";
 
+    internal static string TreePath => ScopedTree + """
+         SELECT a.Id FROM ScopeRows a JOIN ScopeRows t ON a.[Left]<=t.[Left] AND t.[Right]<=a.[Right]
+         WHERE t.Id=@Id ORDER BY a.[Left];
+        """;
+
     internal static string TreeSelectedIds => ScopedTree + " SELECT Id FROM ScopeRows WHERE Id IN @Ids ORDER BY Id;";
 
     internal static string TreeLevel => $"""
