@@ -79,6 +79,9 @@ internal static class TerritorialEntitySql
 
     internal const string PhoneDelete = "DELETE dbo.ТелефонныеКоды WHERE ТелефонныйКод=@Code;";
 
+    internal const string LoadViewState = "SELECT Значение FROM dbo.vwНастройки WHERE КодНастройкиКлиента=@Clid AND КодНастройкиОбщей=0 AND Параметр='InvTerTreeState'";
+    internal const string SaveViewState = "INSERT dbo.vwНастройки (КодНастройкиКлиента,КодНастройкиОбщей,Параметр,Значение) VALUES (@Clid,0,'InvTerTreeState',@Value)";
+
     internal const string TreeSource = """
         SELECT t.КодТерритории AS Id, t.Территория AS Text, t.Parent AS ParentId,
             t.L AS [Left], t.R AS [Right], t.КодТТерритории AS Type
@@ -98,6 +101,8 @@ internal static class TerritorialEntitySql
         """;
 
     private const string Children = "CONVERT(bit,CASE WHEN EXISTS (SELECT 1 FROM ScopeRows c WHERE c.ParentId=n.Id) THEN 1 ELSE 0 END) AS HasChildren";
+
+    internal static string TreeSelectedIds => ScopedTree + " SELECT Id FROM ScopeRows WHERE Id IN @Ids ORDER BY Id;";
 
     internal static string TreeLevel => $"""
         {ScopedTree}

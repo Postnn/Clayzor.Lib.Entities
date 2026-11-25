@@ -103,6 +103,24 @@ public static class TerritorialEntityData
         return db.QueryRequiredAsync<TerritorialEntityLookup>(sql.ToString(), parameters, ct);
     }
 
+    public static async Task<TerritoryViewState?> LoadViewStateAsync(DbManager db, int clid, CancellationToken ct) =>
+        TerritoryViewState.Read((await db.QueryRequiredAsync<string>(TerritorialEntitySql.LoadViewState, new { Clid = clid }, ct)).SingleOrDefault());
+
+    public static Task SaveViewStateAsync(DbManager db, int clid, TerritoryViewState state, CancellationToken ct) =>
+        db.RunDbAsync(connection => connection.ExecuteAsync(new CommandDefinition(TerritorialEntitySql.SaveViewState,
+            new { Clid = clid, Value = state.Serialize() }, cancellationToken: ct)));
+
+    /// <summary>Проверяет каждый возвращаемый ID в текущей области дерева, включая незагруженные узлы.</summary>
+    public static async Task<bool> SelectionInScopeAsync(DbManager db, IReadOnlyCollection<int> ids, IReadOnlyList<int>? roots, CancellationToken ct)
+    {
+        if (ids.Count > 1000 || ids.Any(id => id <= 0)) return false;
+        if (ids.Count == 0) return true;
+        var expected = ids.ToHashSet();
+        var actual = await db.QueryRequiredAsync<int>(TerritorialEntitySql.TreeSelectedIds,
+            new { Ids = expected.ToArray(), Restricted = roots is not null, Roots = roots?.ToArray() ?? [] }, ct);
+        return expected.SetEquals(actual);
+    }
+
     /// <summary>Загружает один уровень с заданными корнями или все корни при отсутствии ограничения.</summary>
     public static Task<IEnumerable<TerritorialEntityTreeRow>> ReadTreeLevelAsync(
         DbManager db, int? parentId, IReadOnlyList<int>? roots, CancellationToken ct = default) =>
