@@ -140,14 +140,9 @@ public static class NumPoolData
             var number = draft.Header.Number;
             var current = await ReadAsync(connection, tx, number, ct);
             EnsureOriginal(original, current);
-            var header = original is null ? draft.Header with { IncomingFor = draft.Header.IncomingFor ?? " ", IncomingTo = draft.Header.IncomingTo ?? " ", Notes = draft.Header.Notes ?? " " } : draft.Header;
             if (original is null)
-            {
-                await EnsureKeysAsync(connection, tx, NumPoolKind.Capacity, [header.CapacityId!.Value], ct);
-                await WriteHeaderAsync(connection, tx, SQLQueries.INSERT_NumPoolHeader, header, ct);
-            }
-            else if (HeaderValues(original.Header) != HeaderValues(header))
-                await WriteHeaderAsync(connection, tx, SQLQueries.UPDATE_NumPoolHeader, header, ct);
+                await EnsureKeysAsync(connection, tx, NumPoolKind.Capacity, [draft.Header.CapacityId!.Value], ct);
+            var header = await SaveHeaderAsync(connection, tx, original?.Header, draft.Header, ct);
 
             foreach (var table in Tables)
             {
@@ -200,6 +195,20 @@ public static class NumPoolData
         var customers = (await batch.ReadAsync<NumPoolLink>()).AsList();
         var phones = (await batch.ReadAsync<NumPoolLink>()).AsList();
         return header is null ? null : new(header, connections, employees, customers, phones);
+    }
+
+    internal static async Task<NumPoolHeader> SaveHeaderAsync(DbConnection connection, DbTransaction tx,
+        NumPoolHeader? original, NumPoolHeader draft, CancellationToken ct)
+    {
+        if (original is null)
+        {
+            var created = draft with { IncomingFor = draft.IncomingFor ?? " ", IncomingTo = draft.IncomingTo ?? " ", Notes = draft.Notes ?? " " };
+            await WriteHeaderAsync(connection, tx, SQLQueries.INSERT_NumPoolHeader, created, ct);
+            return created;
+        }
+        if (HeaderValues(original) != HeaderValues(draft))
+            await WriteHeaderAsync(connection, tx, SQLQueries.UPDATE_NumPoolHeader, draft, ct);
+        return draft;
     }
 
     private static Task<int> WriteHeaderAsync(DbConnection connection, DbTransaction tx, string sql, NumPoolHeader header, CancellationToken ct) =>
