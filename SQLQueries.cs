@@ -371,13 +371,14 @@ DELETE FROM МедицинскиеАнализы
 WHERE КодМедицинскогоАнализа = @Id    -- идентификатор записи
 ";
 
-    /// <summary>Все типы оборудования и оба названия для меню типов.</summary>
+    /// <summary>Типы оборудования для меню с фильтром и порядком из доверенного SQL-билдера.</summary>
     public const string SELECT_ТипыОборудованияДляМеню = @"
 SELECT КодТипаОборудования, -- идентификатор типа
        ТипОборудования, -- русское наименование
        ТипОборудованияЛат -- английское наименование
 FROM dbo.ТипыОборудования
-ORDER BY КодТипаОборудования";
+WHERE {0}
+ORDER BY {1}";
 
     /// <summary>
     /// Поиск типов оборудования по наименованию. Параметры: Search, LimitPlusOne, SortByName.
@@ -3172,20 +3173,20 @@ ELSE
     internal const string SELECT_РегламентныеРаботыРазрешение =
         "SELECT CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.РегламентныеРаботыВыполнение', 'OBJECT', 'INSERT'), 0));";
 
-    /// <summary>Время БД и список регламентных работ в порядке срока.</summary>
+    /// <summary>Время UTC БД и регламентные работы с фильтром и сортировкой.</summary>
     internal const string SELECT_РегламентныеРаботы = """
-        SELECT GETDATE(); -- текущее местное время SQL Server
+        SELECT GETUTCDATE(); -- текущее время UTC SQL Server
         SELECT КодРегламентныхРабот AS Id, -- ключ работы
-               ВыполнитьДо AS Deadline, -- срок, рассчитанный БД
+               DATEADD(MINUTE, DATEDIFF(MINUTE, GETDATE(), GETUTCDATE()), ВыполнитьДо) AS Deadline, -- срок в UTC
                РегламентнаяРабота AS Name, -- название
                Ответственный AS Responsible, -- назначенный ответственный
                Ссылка AS Instruction, -- инструкция
-               ПоследнееВыполнение AS LastCompleted, -- местное время последнего выполнения
+               DATEADD(MINUTE, DATEDIFF(MINUTE, GETDATE(), GETUTCDATE()), ПоследнееВыполнение) AS LastCompleted, -- последнее выполнение в UTC
                Сотрудник AS EmployeeName, -- ФИО исполнителя
                КодСотрудника AS EmployeeId -- ключ исполнителя для перехода
         FROM dbo.vwРегламентныеРаботы
         WHERE {0}
-        ORDER BY ВыполнитьДо ASC, КодРегламентныхРабот ASC;
+        ORDER BY {1};
         """;
 
     /// <summary>Возвращает ограниченный набор различных значений колонки фильтра.</summary>

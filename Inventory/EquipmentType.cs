@@ -1,5 +1,7 @@
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Globalization;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -10,9 +12,14 @@ public sealed class EquipmentType : ILookupEntity
     /// <summary>Имя ключа типа в метаданных списка моделей.</summary>
     public const string IdColumnName = EquipmentTypeColumns.КодТипаОборудования;
 
-    /// <summary>Загружает весь справочник для меню типов в стабильном порядке по коду.</summary>
-    public static Task<IEnumerable<EquipmentType>> ReadMenuAsync(DbManager db, CancellationToken cancellationToken = default) =>
-        db.QueryRequiredAsync<EquipmentType>(SQLQueries.SELECT_ТипыОборудованияДляМеню, null, cancellationToken);
+    /// <summary>Имя русского наименования типа в SQL.</summary>
+    public const string NameColumnName = EquipmentTypeColumns.ТипОборудования;
+
+    /// <summary>Загружает меню типов с фильтром и порядком из доверенного SQL-билдера.</summary>
+    public static Task<IEnumerable<EquipmentType>> ReadMenuAsync(DbManager db, CancellationToken cancellationToken = default,
+        string? gridPredicate = null, DynamicParameters? parameters = null, string? gridOrderBy = null) =>
+        db.QueryRequiredAsync<EquipmentType>(string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ТипыОборудованияДляМеню,
+            gridPredicate ?? "1=1", gridOrderBy ?? "КодТипаОборудования ASC"), parameters, cancellationToken);
 
     /// <summary>Возвращает название на языке сотрудника с резервным русским названием.</summary>
     public string GetMenuName(Employee employee) => employee.PrefersRussian || string.IsNullOrWhiteSpace(NameEn)

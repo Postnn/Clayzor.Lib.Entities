@@ -11,7 +11,7 @@ public sealed record MaintenanceWork
 {
     /// <summary>Ключ работы.</summary>
     public int Id { get; init; }
-    /// <summary>Срок в локальном времени SQL Server.</summary>
+    /// <summary>Срок в UTC после преобразования из локального времени SQL Server.</summary>
     public DateTime? Deadline { get; init; }
     /// <summary>Название регламентной работы.</summary>
     public string Name { get; init; } = "";
@@ -19,7 +19,7 @@ public sealed record MaintenanceWork
     public string Responsible { get; init; } = "";
     /// <summary>Адрес инструкции.</summary>
     public string Instruction { get; init; } = "";
-    /// <summary>Последнее выполнение в локальном времени SQL Server.</summary>
+    /// <summary>Последнее выполнение в UTC после преобразования из локального времени SQL Server.</summary>
     public DateTime? LastCompleted { get; init; }
     /// <summary>Имя сотрудника, выполнившего работу.</summary>
     public string? EmployeeName { get; init; }
@@ -46,13 +46,14 @@ public static class MaintenanceData
         MaintenanceColumns.Instruction, MaintenanceColumns.LastCompleted, MaintenanceColumns.EmployeeName,
     });
 
-    /// <summary>Читает работы в порядке срока. Предикат формирует доверенный SQL-билдер грида из FilterColumns.</summary>
+    /// <summary>Читает работы с фильтром и порядком из доверенного SQL-билдера грида.</summary>
     public static Task<MaintenanceList> ReadAsync(DbManager db, CancellationToken ct = default,
-        string? gridPredicate = null, DynamicParameters? parameters = null) =>
+        string? gridPredicate = null, DynamicParameters? parameters = null, string? gridOrderBy = null) =>
         db.RunDbAsync(async connection =>
         {
             using var result = await connection.QueryMultipleAsync(
-                new CommandDefinition(string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_РегламентныеРаботы, gridPredicate ?? "1=1"), parameters, commandType: CommandType.Text, cancellationToken: ct));
+                new CommandDefinition(string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_РегламентныеРаботы,
+                    gridPredicate ?? "1=1", gridOrderBy ?? "ВыполнитьДо ASC, КодРегламентныхРабот ASC"), parameters, commandType: CommandType.Text, cancellationToken: ct));
             var now = await result.ReadSingleAsync<DateTime>();
             return new MaintenanceList(now, (await result.ReadAsync<MaintenanceWork>()).AsList());
         });
