@@ -6,6 +6,85 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    #region NumPool
+
+    internal const string SELECT_NumPoolAccess = """
+        SELECT CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwНомераТфОП','OBJECT','SELECT'),0)) AS CanRead,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwНомераТфОП','OBJECT','INSERT'),0)) AS CanInsert,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwНомераТфОП','OBJECT','UPDATE'),0)) AS CanUpdate,
+               CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwНомераТфОП','OBJECT','DELETE'),0)) AS CanDelete;
+        """;
+
+    internal const string SELECT_NumPoolHeader = """
+        SELECT n.НомерТфОП AS Number,n.КодНомернойЁмкости AS CapacityId,n.ВходящийДля AS IncomingFor,
+          n.ВходящийНаНомер AS IncomingTo,n.Примечания AS Notes,CONVERT(decimal(5,0),n.Контроль) AS [Control],
+          n.Изменил AS ChangedBy,s.ФИО AS ChangedByName,n.Изменено AS ChangedAt
+        FROM dbo.vwНомераТфОП n {0}
+        LEFT JOIN dbo.Сотрудники s ON s.КодСотрудника=n.Изменил WHERE n.НомерТфОП=@Id;
+        """;
+
+    internal const string SELECT_NumPoolConnections = """
+        SELECT p.КодПодключенияТелефонии AS Id,c.ПодключениеТелефонии+' '+ISNULL(c.Интерфейс,'') AS Name,CONVERT(tinyint,0) AS Private,
+          p.Изменил AS ChangedBy,ISNULL(s.ФИО,'#'+CONVERT(varchar,p.Изменил)) AS ChangedByName,p.Изменено AS ChangedAt
+        FROM dbo.vwПодключенияТелефонииНомераТфОП p
+        JOIN dbo.vwПодключенияТелефонии c ON c.КодПодключенияТелефонии=p.КодПодключенияТелефонии
+        LEFT JOIN dbo.Сотрудники s ON s.КодСотрудника=p.Изменил WHERE p.НомерТфОП=@Id ORDER BY Name,Id;
+        """;
+
+    internal const string SELECT_NumPoolEmployees = """
+        SELECT p.КодСотрудника AS Id,e.Сотрудник AS Name,p.Private,
+          p.Изменил AS ChangedBy,ISNULL(s.ФИО,'#'+CONVERT(varchar,p.Изменил)) AS ChangedByName,p.Изменено AS ChangedAt
+        FROM dbo.vwНомераТфОП_Сотрудники p JOIN dbo.Сотрудники e ON e.КодСотрудника=p.КодСотрудника
+        LEFT JOIN dbo.Сотрудники s ON s.КодСотрудника=p.Изменил WHERE p.НомерТфОП=@Id ORDER BY Name,Id;
+        """;
+
+    internal const string SELECT_NumPoolCustomers = """
+        SELECT p.КодЛица AS Id,c.Кличка AS Name,CONVERT(tinyint,0) AS Private,
+          p.Изменил AS ChangedBy,ISNULL(s.ФИО,'#'+CONVERT(varchar,p.Изменил)) AS ChangedByName,p.Изменено AS ChangedAt
+        FROM dbo.vwНомераТфОП_Лица p JOIN dbo.ЛицаЗаказчики c ON c.КодЛица=p.КодЛица
+        LEFT JOIN dbo.Сотрудники s ON s.КодСотрудника=p.Изменил WHERE p.НомерТфОП=@Id ORDER BY Name,Id;
+        """;
+
+    internal const string NumPoolPhoneSubscriber = "ISNULL(ts.ФИО+ISNULL(' ('+NULLIF(t.Подключено,'')+')',''),t.Подключено)";
+
+    internal const string SELECT_NumPoolPhones = """
+        SELECT p.КодТелефонногоНомера AS Id,ISNULL(t.ПолныйНомер+' '+
+        """ + NumPoolPhoneSubscriber + """
+        ,'#'+CONVERT(varchar,p.КодТелефонногоНомера)) AS Name,CONVERT(tinyint,0) AS Private,
+          p.Изменил AS ChangedBy,ISNULL(s.ФИО,'#'+CONVERT(varchar,p.Изменил)) AS ChangedByName,p.Изменено AS ChangedAt
+        FROM dbo.vwНомераТфОП_Телефоны p LEFT JOIN dbo.vwТелефонныеНомераИзменение t ON t.КодТелефонногоНомера=p.КодТелефонногоНомера
+        LEFT JOIN dbo.Сотрудники ts ON ts.КодСотрудника=t.КодСотрудника
+        LEFT JOIN dbo.Сотрудники s ON s.КодСотрудника=p.Изменил WHERE p.НомерТфОП=@Id ORDER BY Name,Id;
+        """;
+
+    internal const string INSERT_NumPoolHeader = """
+        INSERT dbo.vwНомераТфОП (НомерТфОП,КодНомернойЁмкости,ВходящийДля,ВходящийНаНомер,Примечания,Контроль)
+        VALUES (@Id,@CapacityId,@IncomingFor,@IncomingTo,@Notes,@Control);
+        """;
+    internal const string UPDATE_NumPoolHeader = """
+        UPDATE dbo.vwНомераТфОП SET ВходящийДля=@IncomingFor,ВходящийНаНомер=@IncomingTo,Примечания=@Notes,Контроль=@Control
+        WHERE НомерТфОП=@Id;
+        """;
+    internal const string DELETE_NumPoolHeader = "DELETE dbo.vwНомераТфОП WHERE НомерТфОП=@Id;";
+    internal const string INSERT_NumPoolLinks = "INSERT dbo.{0} (НомерТфОП,{1}{2}) VALUES {3};";
+    internal const string DELETE_NumPoolLinks = "DELETE dbo.{0} WHERE НомерТфОП=@Id AND {1} IN @Keys;";
+    internal const string DELETE_NumPoolAllLinks = "DELETE dbo.{0} WHERE НомерТфОП=@Id;";
+
+    internal const string NumPoolCapacitySource = "SELECT КодНомернойЁмкости AS Id,НомернаяЁмкость AS Name FROM dbo.vwНомерныеЁмкостиСписок";
+    internal const string NumPoolConnectionSource = "SELECT КодПодключенияТелефонии AS Id,ПодключениеТелефонии+' '+ISNULL(Интерфейс,'') AS Name FROM dbo.vwПодключенияТелефонии";
+    internal const string NumPoolCustomerSource = "SELECT КодЛица AS Id,Кличка AS Name FROM dbo.ЛицаЗаказчики";
+    internal const string NumPoolEmployeeSource = "SELECT КодСотрудника AS Id,Сотрудник AS Name FROM dbo.Сотрудники WHERE Состояние=0";
+    internal const string NumPoolPhoneSource = """
+        SELECT t.КодТелефонногоНомера AS Id,ISNULL(t.ПолныйНомер+ISNULL('['+NULLIF(t.ТелефонныйНомер,t.ПолныйНомер)+']','')+' '+
+        """ + NumPoolPhoneSubscriber + """
+        ,'#'+CONVERT(varchar,t.КодТелефонногоНомера)) AS Name
+        FROM dbo.vwТелефонныеНомераИзменение t LEFT JOIN dbo.Сотрудники ts ON ts.КодСотрудника=t.КодСотрудника
+        """;
+    internal const string SELECT_NumPoolOptions = "SELECT TOP (@Limit) Id,Name FROM ({0}) x WHERE (@Id IS NULL OR Id=@Id) AND Name LIKE @Pattern ORDER BY Name,Id;";
+    internal const string SELECT_NumPoolLinkKeys = "SELECT Id FROM ({0}) x WHERE Id IN @Keys;";
+
+    #endregion
+
     /// <summary>Пригодное рабочее место и признак склада для инвентаризации.</summary>
     public const string SELECT_LocationFactSite = """
         SELECT КодРасположения AS Id, РасположениеPath1 AS Name, CONVERT(bit,CASE WHEN РабочееМесто=4 THEN 1 ELSE 0 END) AS IsWarehouse
