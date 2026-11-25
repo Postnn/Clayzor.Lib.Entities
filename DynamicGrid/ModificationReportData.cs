@@ -10,7 +10,11 @@ namespace Clayzor.Lib.Entities.DynamicGrid;
 public sealed record ModificationReportDefinition(int Id, string Name, string? Sql, string? FormReference);
 
 /// <summary>Страница строк со схемой исходного SELECT.</summary>
-public sealed record ModificationReportPage(IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, long Total);
+public sealed record ModificationReportPage(IReadOnlyList<string> Columns, IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, long Total)
+{
+    /// <summary>Разрешённые имена сотрудников по их кодам.</summary>
+    public IReadOnlyDictionary<int, string> Authors { get; init; } = new Dictionary<int, string>();
+}
 
 /// <summary>Чтение разделов отчёта из авторизованного SQL-каталога Inventory.</summary>
 public static class ModificationReportData
@@ -49,9 +53,35 @@ public static class ModificationReportData
             var total = await result.ReadSingleAsync<long>();
             var rows = (await result.ReadAsync()).Select(row => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>(
                 (IDictionary<string, object?>)row, StringComparer.OrdinalIgnoreCase)).ToList();
-            return new ModificationReportPage(fields, rows, total);
+            var output = new ModificationReportPage(fields, rows, total);
+            if (!fields.Skip(1).Any(IsAuthorColumn)) return output;
+            var ids = rows.Select(AuthorId).OfType<int>().Distinct().ToArray();
+            if (ids.Length == 0) return output;
+            var authors = await connection.QueryAsync<AuthorName>(new CommandDefinition(
+                SQLQueries.SELECT_ModificationAuthors, new { Ids = ids }, cancellationToken: ct));
+            return output with { Authors = authors.Where(a => !string.IsNullOrWhiteSpace(a.Name)).ToDictionary(a => a.Id, a => a.Name) };
         });
     }
+
+    /// <summary>Возвращает ФИО из доверенного справочника либо исходную подпись или fallback.</summary>
+    public static string? CellText(ModificationReportPage result, IReadOnlyDictionary<string, object?> row, string name)
+    {
+        var text = Convert.ToString(row[name], CultureInfo.CurrentCulture);
+        if (result.Columns[0] == name || !ModificationReportData.IsAuthorColumn(name)) return text;
+        var id = ModificationReportData.AuthorId(row);
+        if (id.HasValue && result.Authors.TryGetValue(id.Value, out var fio)) return fio;
+        return !string.IsNullOrWhiteSpace(text) ? text : id.HasValue ? $"#{id}" : "Автор не указан";
+    }
+
+    /// <summary>Определяет исходные названия колонок автора.</summary>
+    public static bool IsAuthorColumn(string name) => name is "ФИО" or "ИзменилФИО" or "Изменил ФИО";
+
+    /// <summary>Читает положительный код сотрудника только из скрытой исходной колонки.</summary>
+    public static int? AuthorId(IReadOnlyDictionary<string, object?> row) =>
+        row.TryGetValue("Изменил", out var raw) && int.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture),
+            NumberStyles.None, CultureInfo.InvariantCulture, out var id) && id > 0 ? id : null;
+
+    private sealed record AuthorName(int Id, string Name);
 
     internal static string ValidateSelect(string? source)
     {

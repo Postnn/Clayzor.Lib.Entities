@@ -6,6 +6,9 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    /// <summary>ФИО сотрудников для страницы отчёта по уникальным кодам авторов.</summary>
+    internal const string SELECT_ModificationAuthors = "SELECT КодСотрудника AS Id, ФИО AS Name FROM dbo.Сотрудники WHERE КодСотрудника IN @Ids";
+
     #region NumPool
 
     internal const string SELECT_NumPoolAccess = """
