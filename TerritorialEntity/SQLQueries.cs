@@ -3,6 +3,12 @@ namespace Clayzor.Lib.Entities.TerritorialEntity;
 // Feature-scoped until the coordinator assigns the shared SQLQueries.cs integration.
 internal static class TerritorialEntitySql
 {
+    internal const string ReadMoveNode = """
+        SELECT КодТерритории AS Id, Parent AS ParentId, L AS [Left], R AS [Right]
+        FROM dbo.Территории WITH (UPDLOCK,HOLDLOCK) WHERE КодТерритории=@Id;
+        """;
+    internal const string Reparent = "UPDATE dbo.Территории SET Parent=@ParentId WHERE КодТерритории=@Id;";
+
     internal const string TerritoryRead = """
         SELECT t.КодТерритории AS Id, t.Parent AS ParentId, t.КодТТерритории AS Type, t.Территория AS Name,
             t.Территория1 AS AlternateName, t.Caption, t.Caption1 AS AlternateCaption,

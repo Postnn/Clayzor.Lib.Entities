@@ -161,6 +161,51 @@ public static class TerritorialEntityData
         });
     }
 
+    /// <summary>Снимок территории и её границ для безопасного переноса.</summary>
+    public sealed record MoveNode(int Id, int? ParentId, int Left, int Right);
+
+    /// <summary>Отклоняет перенос в себя, потомка или к прежнему родителю.</summary>
+    public static bool CanReparent(MoveNode source, MoveNode? target) =>
+        source.Id > 0 && source.Left < source.Right && source.ParentId != target?.Id &&
+        (target is null || target.Id > 0 && target.Id != source.Id && target.Left < target.Right &&
+            !(source.Left <= target.Left && target.Right <= source.Right));
+
+    /// <summary>Переносит территорию только по исходному снимку обеих сторон; L/R обслуживает SQL-триггер.</summary>
+    internal static bool IsKnownMoveRejection(int number) => number is 229 or 547 or 1205 or 3609 or 50000;
+
+    public static async Task ReparentAsync(DbManager db, string? principal, MoveNode source, MoveNode? target, CancellationToken ct)
+    {
+        if (!CanReparent(source, target)) throw new TerritorialEntityRuleException("Недопустимый перенос территории.");
+        if (!(await ReadAccessAsync(db, principal, ct)).TerritoryUpdate) throw Denied();
+        await WriteAsync(db, async (connection, transaction) =>
+        {
+            async Task<MoveNode?> Read(int id) => await ReadSingleAsync<MoveNode>(connection, transaction,
+                TerritorialEntitySql.ReadMoveNode, new { Id = id }, ct);
+            var current = await Read(source.Id);
+            var parent = target is null ? null : await Read(target.Id);
+            if (current != source || parent != target) throw Changed();
+            try
+            {
+                await connection.ExecuteAsync(new CommandDefinition(TerritorialEntitySql.Reparent,
+                    new { source.Id, ParentId = target?.Id }, transaction, cancellationToken: ct));
+            }
+            catch (Microsoft.Data.SqlClient.SqlException error) when (IsKnownMoveRejection(error.Number))
+            {
+                // Only classify the UPDATE response. Failure during commit stays indeterminate.
+                throw new TerritorialEntityRuleException(error.Number switch
+                {
+                    229 => "Нет разрешения на изменение родителя территории.",
+                    1205 => "Перенос отменён из-за одновременного изменения. Обновите дерево.",
+                    _ => "База отклонила перенос. Проверьте родителя, связи и телефонный код территории."
+                });
+            }
+            var saved = await Read(source.Id);
+            if (saved is null || saved.ParentId != target?.Id)
+                throw new TerritorialEntityRuleException("База не подтвердила перенос территории.");
+            return true;
+        }, ct);
+    }
+
     /// <summary>Обновляет поля территории. Parent и вложенные множества принадлежат базе.</summary>
     public static async Task<TerritorialEntityRecord> UpdateTerritoryAsync(DbManager db, string? principal,
         TerritorialEntityRecord original, TerritorialEntityRecord draft, CancellationToken ct = default)
