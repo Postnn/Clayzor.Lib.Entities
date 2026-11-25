@@ -23,7 +23,7 @@ public interface ISlBlSynchronization
 public enum SlBlOutcome { Rejected, Verified, Partial, Unknown }
 
 /// <summary>Результат операции и оставшиеся различия.</summary>
-public sealed record SlBlResult(SlBlOutcome Outcome, SlBlDifferences? Differences = null);
+public sealed record SlBlResult(SlBlOutcome Outcome, SlBlDifferences? Differences = null, string? Message = null);
 
 /// <summary>Выполнение и безопасная сверка одной подтверждённой синхронизации.</summary>
 public static class SlBlSynchronization
@@ -36,14 +36,22 @@ public static class SlBlSynchronization
             parsed.Kind is not null || SlBlData.Validate(intent.Desired) is not null)
             return new(SlBlOutcome.Rejected);
 
-        if (!await adapter.CanWriteAsync(intent.Address, intent.Kind, ct) ||
-            await adapter.ReadOriginalAsync(intent.Address, intent.Kind, ct) != intent.Original)
-            return new(SlBlOutcome.Rejected);
-
-        ct.ThrowIfCancellationRequested();
         try
         {
-            await adapter.DispatchAsync(intent, ct);
+            if (!await adapter.CanWriteAsync(intent.Address, intent.Kind, ct) ||
+                await adapter.ReadOriginalAsync(intent.Address, intent.Kind, ct) != intent.Original)
+                return new(SlBlOutcome.Rejected);
+            ct.ThrowIfCancellationRequested();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // До вызова адаптера синхронизации почтовый эффект невозможен.
+            return new(SlBlOutcome.Rejected, Message: "Команда не отправлена. Не удалось проверить права или прочитать исходный список.");
+        }
+        try
+        {
+            try { await adapter.DispatchAsync(intent, ct); }
+            catch (SlBlNotDispatchedException ex) { return new(SlBlOutcome.Rejected, Message: ex.Message); }
             return await ReconcileAsync(adapter, intent, ct);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -60,3 +68,6 @@ public static class SlBlSynchronization
             ? SlBlOutcome.Verified : SlBlOutcome.Partial, diff);
     }
 }
+
+/// <summary>Адаптер подтвердил отказ до передачи команды почтовой процедуре.</summary>
+public sealed class SlBlNotDispatchedException(string message) : InvalidOperationException(message);

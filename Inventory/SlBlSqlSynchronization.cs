@@ -22,7 +22,7 @@ public sealed class SlBlSqlSynchronization(DbManager db, string? principal, ISlB
         return actor is not null && await policy.AllowsAsync(actor, address, kind, ct)
             && await SlBlData.FindAddressAsync(db, address, ct) == address
             && (await db.QueryRequiredAsync<bool>(SQLQueries.SELECT_SlBlProcedureAvailable,
-                new { Name = SQLQueries.SP_SlBlSynchronize }, ct)).Single();
+                new { Name = SQLQueries.SP_SlBlSynchronize, AddressLength = address.Length, ListLength = SlBlData.MaxLength }, ct)).Single();
     }
 
     /// <inheritdoc />
@@ -32,7 +32,8 @@ public sealed class SlBlSqlSynchronization(DbManager db, string? principal, ISlB
     /// <inheritdoc />
     public async Task DispatchAsync(SlBlIntent intent, CancellationToken ct)
     {
-        if (!await CanWriteAsync(intent.Address, intent.Kind, ct)) throw new UnauthorizedAccessException();
+        if (!await CanWriteAsync(intent.Address, intent.Kind, ct))
+            throw new SlBlNotDispatchedException("Команда не отправлена. Право синхронизации больше не подтверждено.");
         await db.RunDbAsync(connection => connection.ExecuteAsync(new CommandDefinition(SQLQueries.SP_SlBlSynchronize,
             new { AddressSet = intent.Address, BlockSet = (byte)intent.Kind, SlBl = intent.Desired },
             commandType: CommandType.StoredProcedure, commandTimeout: 180, cancellationToken: ct)));

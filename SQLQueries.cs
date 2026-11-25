@@ -15,7 +15,10 @@ public static class SQLQueries
           AND HAS_PERMS_BY_NAME(@Name,'OBJECT','EXECUTE')=1
           AND (SELECT COUNT(*) FROM sys.parameters WHERE object_id=OBJECT_ID(@Name))=3
           AND (SELECT COUNT(*) FROM sys.parameters WHERE object_id=OBJECT_ID(@Name) AND is_output=0 AND
-               ((name IN ('@AddressSet','@SlBl') AND TYPE_NAME(system_type_id) IN ('varchar','nvarchar'))
+               ((name IN ('@AddressSet','@SlBl') AND TYPE_NAME(system_type_id) IN ('varchar','nvarchar')
+                 AND (max_length=-1 OR max_length >=
+                      (CASE name WHEN '@AddressSet' THEN @AddressLength ELSE @ListLength END) *
+                      (CASE TYPE_NAME(system_type_id) WHEN 'nvarchar' THEN 2 ELSE 1 END)))
                 OR (name='@BlockSet' AND TYPE_NAME(system_type_id) IN ('bit','tinyint','int'))))=3
           THEN 1 ELSE 0 END)
         """;
