@@ -6,6 +6,20 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    /// <summary>Подтверждённая процедура синхронизации списков Safe/Blocked.</summary>
+    internal const string SP_SlBlSynchronize = "dbo.sp_MailboxesSlBlSynchronize";
+
+    /// <summary>Проверяет существование процедуры, EXECUTE и три совместимых параметра.</summary>
+    internal const string SELECT_SlBlProcedureAvailable = """
+        SELECT CONVERT(bit,CASE WHEN OBJECT_ID(@Name,'P') IS NOT NULL
+          AND HAS_PERMS_BY_NAME(@Name,'OBJECT','EXECUTE')=1
+          AND (SELECT COUNT(*) FROM sys.parameters WHERE object_id=OBJECT_ID(@Name))=3
+          AND (SELECT COUNT(*) FROM sys.parameters WHERE object_id=OBJECT_ID(@Name) AND is_output=0 AND
+               ((name IN ('@AddressSet','@SlBl') AND TYPE_NAME(system_type_id) IN ('varchar','nvarchar'))
+                OR (name='@BlockSet' AND TYPE_NAME(system_type_id) IN ('bit','tinyint','int'))))=3
+          THEN 1 ELSE 0 END)
+        """;
+
     /// <summary>ФИО сотрудников для страницы отчёта по уникальным кодам авторов.</summary>
     internal const string SELECT_ModificationAuthors = "SELECT КодСотрудника AS Id, ФИО AS Name FROM dbo.Сотрудники WHERE КодСотрудника IN @Ids";
 
