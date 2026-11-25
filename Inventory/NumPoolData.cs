@@ -140,7 +140,7 @@ public static class NumPoolData
             var number = draft.Header.Number;
             var current = await ReadAsync(connection, tx, number, ct);
             EnsureOriginal(original, current);
-            var header = draft.Header with { IncomingFor = draft.Header.IncomingFor ?? " ", IncomingTo = draft.Header.IncomingTo ?? " ", Notes = draft.Header.Notes ?? " " };
+            var header = original is null ? draft.Header with { IncomingFor = draft.Header.IncomingFor ?? " ", IncomingTo = draft.Header.IncomingTo ?? " ", Notes = draft.Header.Notes ?? " " } : draft.Header;
             if (original is null)
             {
                 await EnsureKeysAsync(connection, tx, NumPoolKind.Capacity, [header.CapacityId!.Value], ct);
@@ -205,8 +205,8 @@ public static class NumPoolData
     private static Task<int> WriteHeaderAsync(DbConnection connection, DbTransaction tx, string sql, NumPoolHeader header, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(sql, new
         {
-            Id = Ansi(header.Number, 20), header.CapacityId, IncomingFor = Ansi(header.IncomingFor!, 300),
-            IncomingTo = Ansi(header.IncomingTo!, 50), Notes = Ansi(header.Notes!, 300), Control = (byte)header.Control!.Value,
+            Id = Ansi(header.Number, 20), header.CapacityId, IncomingFor = Ansi(header.IncomingFor, 300),
+            IncomingTo = Ansi(header.IncomingTo, 50), Notes = Ansi(header.Notes, 300), Control = (byte)header.Control!.Value,
         }, tx, cancellationToken: ct));
 
     private static async Task SaveLinksAsync(DbConnection connection, DbTransaction tx, string number, LinkTable table,
@@ -263,7 +263,7 @@ public static class NumPoolData
         NumPoolKind.Phone => SQLQueries.NumPoolPhoneSource, _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    private static DbString Ansi(string value, int length) => new() { Value = value, IsAnsi = true, Length = length };
+    private static DbString Ansi(string? value, int length) => new() { Value = value, IsAnsi = true, Length = length };
     private static string Format(string format, params object[] args) => string.Format(CultureInfo.InvariantCulture, format, args);
     private sealed record LinkTable(NumPoolKind Kind, string Name, string Key);
 }
