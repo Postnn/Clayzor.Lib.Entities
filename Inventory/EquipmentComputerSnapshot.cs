@@ -147,7 +147,7 @@ public sealed class EquipmentComputerSnapshot
             КодОборудования = EquipmentId,
             С = Date.Date,
             ОжидаетсяСуществующий = ExpectedExisting ? 1 : 0,
-            ИсходноеИзменено = ChangedAt,
+            ИсходноеИзменено = ExpectedExisting ? ChangedAt : (DateTime?)null,
             RAM = RamMb,
             RAMDetail = RamDetail,
             HD = HdGb,
