@@ -3208,4 +3208,117 @@ ELSE
     internal const string INSERT_РегламентныеРаботыВыполнение =
         "INSERT INTO dbo.РегламентныеРаботыВыполнение (КодРегламентныхРабот) VALUES (@id);";
 
+
+    /// <summary>Серверная дата и разрешения действующего контрактa расписания.</summary>
+    internal const string SELECT_ДежурствоКонтекст = """
+        SELECT CONVERT(date, GETDATE()) AS Today,
+               CONVERT(bit, CASE WHEN (SYSTEM_USER LIKE N'%\Vladimir' OR SYSTEM_USER LIKE N'%\Administrator' OR SYSTEM_USER LIKE N'%\Anatoly')
+                   AND HAS_DBACCESS(N'ЗаявкиIT') = 1
+                   AND OBJECT_ID(N'ЗаявкиIT.dbo.sp_ПересчитатьПланРабот', 'P') IS NOT NULL
+                   AND HAS_PERMS_BY_NAME(N'dbo.ДежурныеИнженерыРасписание', 'OBJECT', 'INSERT') = 1
+                   THEN 1 ELSE 0 END) AS CanInsert,
+               CONVERT(bit, CASE WHEN (SYSTEM_USER LIKE N'%\Vladimir' OR SYSTEM_USER LIKE N'%\Administrator' OR SYSTEM_USER LIKE N'%\Anatoly')
+                   AND HAS_DBACCESS(N'ЗаявкиIT') = 1
+                   AND OBJECT_ID(N'ЗаявкиIT.dbo.sp_ПересчитатьПланРабот', 'P') IS NOT NULL
+                   AND HAS_PERMS_BY_NAME(N'dbo.ДежурныеИнженерыРасписание', 'OBJECT', 'UPDATE') = 1
+                   THEN 1 ELSE 0 END) AS CanUpdate,
+               CONVERT(bit, CASE WHEN OBJECT_ID(N'ЗаявкиIT.dbo.НерабочиеДни', 'U') IS NOT NULL
+                   AND OBJECT_ID(N'ЗаявкиIT.dbo.sp_НерабочиеДниIns', 'P') IS NOT NULL
+                   AND OBJECT_ID(N'ЗаявкиIT.dbo.sp_НерабочиеДниDel', 'P') IS NOT NULL
+                   THEN 1 ELSE 0 END) AS CanChangeTimeOff;
+        """;
+
+    /// <summary>Первый свободный день от известной серверной даты.</summary>
+    internal const string SELECT_ДежурствоСвободныйДень = """
+        WITH Schedule AS (
+            SELECT Дата FROM dbo.ДежурныеИнженерыРасписание WHERE Дата >= @today
+            UNION ALL SELECT DATEADD(day, -1, @today)
+        )
+        SELECT DATEADD(day, 1, MIN(s.Дата))
+        FROM Schedule s
+        WHERE NOT EXISTS (SELECT 1 FROM Schedule nextDay WHERE nextDay.Дата = DATEADD(day, 1, s.Дата));
+        """;
+
+    /// <summary>Снимок карточки и рассчитанные БД поля закрытия. Подстановка 0 — фиксированный режим блокировки.</summary>
+    internal const string SELECT_ДежурствоКарточка = """
+        SELECT d.Дата AS DutyDate, d.КодСотрудника AS PlannedId, d.КодСотрудникаФакт AS ActualId,
+               d.КодЛицаРаботодателяФакт AS EmployerId, d.РабочийДень AS WorkDay, d.Оплата AS Payment,
+               d.ДатаОтгула AS TimeOff, d.Закрыто AS Closed, d.Изменил AS ChangedById, d.Изменено AS ChangedAt,
+               p.Сотрудник AS PlannedName, f.Сотрудник AS ActualName, e.Сотрудник AS ChangedByName
+        FROM dbo.ДежурныеИнженерыРасписание d {0}
+        LEFT JOIN dbo.Сотрудники p ON p.КодСотрудника = d.КодСотрудника
+        LEFT JOIN dbo.Сотрудники f ON f.КодСотрудника = d.КодСотрудникаФакт
+        LEFT JOIN dbo.Сотрудники e ON e.КодСотрудника = d.Изменил
+        WHERE d.Дата = @date;
+        """;
+
+    /// <summary>Кандидаты на дежурство со статистикой по эффективному инженеру за месяц.</summary>
+    internal const string SELECT_ДежурствоИнженеры = """
+        SELECT TOP (@limit) e.КодСотрудника AS Id, e.Сотрудник AS Name,
+               tally.Total, tally.Weekends
+        FROM dbo.Сотрудники e
+        LEFT JOIN (
+            SELECT ISNULL(КодСотрудникаФакт, КодСотрудника) AS EngineerId, COUNT(*) AS Total,
+                   SUM(CASE WHEN РабочийДень = 0 THEN 1 ELSE 0 END) AS Weekends
+            FROM dbo.ДежурныеИнженерыРасписание
+            WHERE Дата >= @month AND Дата < DATEADD(month, 1, @month) AND РабочийДень IS NOT NULL
+            GROUP BY ISNULL(КодСотрудникаФакт, КодСотрудника)
+        ) tally ON tally.EngineerId = e.КодСотрудника
+        WHERE e.Состояние = 0 AND (@id IS NULL OR e.КодСотрудника = @id)
+          AND (@search IS NULL OR e.Сотрудник LIKE @search ESCAPE '~' OR e.КодСотрудника = @code)
+          AND EXISTS (SELECT 1 FROM dbo.РолиСотрудников r WHERE r.КодСотрудника = e.КодСотрудника AND r.КодРоли = @engineerRole)
+        ORDER BY e.Сотрудник, e.КодСотрудника;
+        """;
+
+    /// <summary>Календарь сотрудника по территории рабочего места и календарю праздников.</summary>
+    internal const string SELECT_ДежурствоРабочийДень = """
+        SELECT CONVERT(bit, CASE WHEN ISNULL((
+            SELECT h.РабочийВыходной
+            FROM dbo.Праздники h
+            JOIN dbo.Территории parent ON parent.КодТерритории = h.КодТерритории
+            JOIN dbo.Территории office ON parent.L <= office.L AND parent.R >= office.R
+            WHERE h.Дата = @date AND office.КодТерритории = ISNULL((
+                SELECT TOP (1) parentLocation.КодТерритории
+                FROM dbo.РабочиеМеста seat
+                JOIN dbo.Расположения location ON location.КодРасположения = seat.КодРасположения
+                JOIN dbo.Расположения parentLocation ON location.L >= parentLocation.L AND location.R <= parentLocation.R
+                WHERE seat.КодСотрудника = @employeeId AND parentLocation.КодТерритории IS NOT NULL
+                ORDER BY parentLocation.L DESC
+            ), @fallbackTerritory)
+        ), CASE WHEN (DATEDIFF(day, '19000101', @date) % 7 + 7) % 7 < 5 THEN 1 ELSE 0 END) = 1 THEN 1 ELSE 0 END);
+        """;
+
+    /// <summary>Добавляет плановую запись.</summary>
+    internal const string INSERT_Дежурство = "INSERT dbo.ДежурныеИнженерыРасписание (Дата, КодСотрудника) VALUES (@date, @engineerId);";
+    /// <summary>Меняет планового инженера.</summary>
+    internal const string UPDATE_ДежурствоПлан = "UPDATE dbo.ДежурныеИнженерыРасписание SET КодСотрудника = @engineerId WHERE Дата = @date;";
+    /// <summary>Пишет факт. Расчёт оплаты, аудит и календарь выполняет триггер.</summary>
+    internal const string UPDATE_ДежурствоФакт = """
+        UPDATE dbo.ДежурныеИнженерыРасписание
+        SET КодСотрудникаФакт = @actualId, ДатаОтгула = @timeOff, Закрыто = @close WHERE Дата = @date;
+        """;
+
+    /// <summary>Ищет интервалы отгула, связанные со старым сотрудником и прежней датой.</summary>
+    internal const string SELECT_ДежурствоИнтервалыОтгула = """
+        SELECT TOP (2) КодНерабочихДней -- идентификатор для штатной процедуры
+        FROM ЗаявкиIT.dbo.НерабочиеДни WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодСотрудника = @employeeId AND От = @timeOff AND До = DATEADD(day, 1, @timeOff)
+          AND Описание = N'Отгул за дежурство';
+        """;
+
+    /// <summary>Проверяет ссылки других закрытых дежурств на тот же отгул.</summary>
+    internal const string SELECT_ДежурствоДругойВладелецОтгула = """
+        SELECT CONVERT(bit, CASE WHEN EXISTS (SELECT 1 FROM dbo.ДежурныеИнженерыРасписание WITH (UPDLOCK, HOLDLOCK)
+            WHERE Дата <> @date AND Закрыто = 1 AND ДатаОтгула = @timeOff AND ISNULL(КодСотрудникаФакт, КодСотрудника) = @employeeId)
+            THEN 1 ELSE 0 END);
+        """;
+
+    /// <summary>Штатное удаление интервала отгула.</summary>
+    internal const string DELETE_ДежурствоОтгул = "EXEC ЗаявкиIT.dbo.sp_НерабочиеДниDel @КодНерабочихДней = @intervalId;";
+    /// <summary>Штатная регистрация интервала [дата отгула, следующий день).</summary>
+    internal const string INSERT_ДежурствоОтгул = """
+        DECLARE @next date = DATEADD(day, 1, @timeOff);
+        EXEC ЗаявкиIT.dbo.sp_НерабочиеДниIns @КодСотрудника = @employeeId,
+            @От = @timeOff, @До = @next, @Описание = N'Отгул за дежурство';
+        """;
 }
