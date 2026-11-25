@@ -3364,4 +3364,44 @@ ELSE
         WHERE КодПулаТелефонов = @poolId AND ТипАтрибутаТелефона = CONVERT(varchar(50), @type COLLATE Cyrillic_General_CI_AS);
         SELECT @@ROWCOUNT;
         """;
+
+    /// <summary>SQL-разрешения представления параметров Билайн и исключения действующего триггера.</summary>
+    internal const string SELECT_БилайнПрава = """
+        SELECT CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwПараметрыДоговоровСвязиБилайн','OBJECT','SELECT'),0)) AS CanRead,
+               CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwПараметрыДоговоровСвязиБилайн','OBJECT','UPDATE'),0)) AS CanUpdate,
+               CONVERT(bit, CASE WHEN SYSTEM_USER LIKE N'%\ITManagerAssistant' OR SYSTEM_USER LIKE N'%\Vladimir'
+                    THEN 1 ELSE 0 END) AS NamedWriter;
+        """;
+
+    /// <summary>Параметры одной записи, сведения договора и активной SIM. Блокировка выбирается только кодом Entities.</summary>
+    internal const string SELECT_БилайнКарточка = """
+        SELECT p.НомерДоговора AS Number,
+               ISNULL(main.НомерДокумента, p.НомерДоговора) AS BaseNumber,
+               CASE WHEN p.НомерТелефонаМобильногоБюджета = '' THEN '' ELSE p.НомерДоговора END AS BudgetNumber,
+               p.НомерТелефонаМобильногоБюджета AS BudgetPhone, sim.КодОборудования AS EquipmentId,
+               ISNULL(contract.Заказчик, main.Заказчик) AS Customer,
+               CASE WHEN p.НомерТелефонаМобильногоБюджета = '' THEN '' ELSE p.ИмяПользователяВБилайн END AS UserName,
+               p.Актуальность AS Actual, p.TimeZone, p.EmailМенеджера AS EmailManager,
+               CONVERT(bit, CASE WHEN p.КодЛичногоКабинетаПользователя IS NULL THEN 0 ELSE 1 END) AS HasAccount,
+               p.Изменил AS ChangedBy, p.Изменено AS ChangedAt, employee.Сотрудник AS ChangedByName
+        FROM dbo.vwПараметрыДоговоровСвязиБилайн p {0}
+        LEFT JOIN (
+            SELECT s.НомерТелефона,s.КодОборудования,s.КодДоговора
+            FROM dbo.vwSIMКарты s JOIN dbo.vwОборудование e ON e.КодОборудования = s.КодОборудования
+            WHERE e.Списано IS NULL
+        ) sim ON p.НомерТелефонаМобильногоБюджета <> '' AND p.НомерТелефонаМобильногоБюджета = sim.НомерТелефона
+        LEFT JOIN dbo.ДоговорыСвязи main ON main.КодДокумента = sim.КодДоговора
+        LEFT JOIN dbo.ДоговорыСвязи contract ON contract.НомерДокумента = p.НомерДоговора AND contract.КодЛицаИсполнителя = @beeline
+        LEFT JOIN dbo.Сотрудники employee ON employee.КодСотрудника = p.Изменил
+        WHERE p.НомерДоговора = @id;
+        """;
+
+    /// <summary>Изменяет только два поля и возвращает число затронутых договоров.</summary>
+    internal const string UPDATE_БилайнПараметры = """
+        UPDATE dbo.vwПараметрыДоговоровСвязиБилайн
+        SET TimeZone = CONVERT(varchar(32), @timeZone COLLATE Cyrillic_General_CI_AS),
+            EmailМенеджера = CONVERT(varchar(50), @email COLLATE Cyrillic_General_CI_AS)
+        WHERE НомерДоговора = @id;
+        SELECT @@ROWCOUNT;
+        """;
 }
