@@ -347,3 +347,20 @@ internal static class NetSocketColumns
     public const string Работает = "Работает";
     public const string Примечание = "Примечание";
 }
+
+/// <summary>Колонки представления vwРегламентныеРаботы, доступные в фильтрах.</summary>
+public static class MaintenanceColumns
+{
+    /// <summary>Рассчитанный срок выполнения.</summary>
+    public const string Deadline = "ВыполнитьДо";
+    /// <summary>Название работы.</summary>
+    public const string Name = "РегламентнаяРабота";
+    /// <summary>Назначенный ответственный.</summary>
+    public const string Responsible = "Ответственный";
+    /// <summary>Адрес инструкции.</summary>
+    public const string Instruction = "Ссылка";
+    /// <summary>Время последнего выполнения.</summary>
+    public const string LastCompleted = "ПоследнееВыполнение";
+    /// <summary>Имя исполнителя последнего выполнения.</summary>
+    public const string EmployeeName = "Сотрудник";
+}

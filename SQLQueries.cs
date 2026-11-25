@@ -3167,4 +3167,44 @@ IF NOT EXISTS (SELECT 1 FROM vwЛокальнаяСеть WHERE КодЛокал
     RAISERROR('Операция PoE недоступна для этой записи.', 16, 1);
 ELSE
     EXEC dbo.sp_ResetPoEport @КодЛокальнойСети = @КодЛокальнойСети;";
+
+    /// <summary>Права на регистрацию выполнения регламентных работ в текущем SQL-контексте.</summary>
+    internal const string SELECT_РегламентныеРаботыРазрешение =
+        "SELECT CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.РегламентныеРаботыВыполнение', 'OBJECT', 'INSERT'), 0));";
+
+    /// <summary>Время БД и список регламентных работ в порядке срока.</summary>
+    internal const string SELECT_РегламентныеРаботы = """
+        SELECT GETDATE(); -- текущее местное время SQL Server
+        SELECT КодРегламентныхРабот AS Id, -- ключ работы
+               ВыполнитьДо AS Deadline, -- срок, рассчитанный БД
+               РегламентнаяРабота AS Name, -- название
+               Ответственный AS Responsible, -- назначенный ответственный
+               Ссылка AS Instruction, -- инструкция
+               ПоследнееВыполнение AS LastCompleted, -- местное время последнего выполнения
+               Сотрудник AS EmployeeName, -- ФИО исполнителя
+               КодСотрудника AS EmployeeId -- ключ исполнителя для перехода
+        FROM dbo.vwРегламентныеРаботы
+        WHERE {0}
+        ORDER BY ВыполнитьДо ASC, КодРегламентныхРабот ASC;
+        """;
+
+    /// <summary>Возвращает ограниченный набор различных значений колонки фильтра.</summary>
+    internal const string SELECT_РегламентныеРаботыЗначенияФильтра = """
+        SELECT DISTINCT TOP (@sampleLimit) {0} AS Value -- значение утверждённой колонки
+        FROM dbo.vwРегламентныеРаботы
+        ORDER BY Value;
+        """;
+
+    /// <summary>Проверяет существование и утверждение работы перед записью.</summary>
+    internal const string SELECT_РегламентнаяРаботаДоступна = """
+        SELECT CONVERT(bit, CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.vwРегламентныеРаботы
+            WHERE КодРегламентныхРабот = @id AND РегламентнаяРабота NOT LIKE '*%'
+        ) THEN 1 ELSE 0 END); -- утверждённая работа доступна в представлении
+        """;
+
+    /// <summary>Регистрирует выполнение. Исполнителя и время устанавливает БД.</summary>
+    internal const string INSERT_РегламентныеРаботыВыполнение =
+        "INSERT INTO dbo.РегламентныеРаботыВыполнение (КодРегламентныхРабот) VALUES (@id);";
+
 }
