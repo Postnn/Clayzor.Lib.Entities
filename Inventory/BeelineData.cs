@@ -96,7 +96,17 @@ public static class BeelineData
             throw new BeelineRejectedException("Проверка данных завершилась ошибкой. Запись не начата.", e);
         }
 
-        return await db.RunDbAsync(async connection =>
+        var dispatched = false;
+        try
+        {
+            return await db.RunDbAsync(SaveTransactionAsync);
+        }
+        catch (Exception e) when (!dispatched && e is not BeelineRejectedException)
+        {
+            throw new BeelineRejectedException("Подготовка сохранения завершилась ошибкой. Запись не начата.", e);
+        }
+
+        async Task<BeelineContract> SaveTransactionAsync(DbConnection connection)
         {
             await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
             var committing = false;
@@ -110,8 +120,11 @@ public static class BeelineData
                     current.ChangedAt != original.ChangedAt || current.ChangedBy != original.ChangedBy)
                     throw new BeelineRejectedException("Параметры договора изменились. Сверьте исходные данные.");
 
-                var affected = await connection.QuerySingleAsync<int>(Command(SQLQueries.UPDATE_БилайнПараметры,
-                    new { id = Key(original.Number), timeZone = draft.TimeZone, email = draft.EmailManager }, transaction, ct));
+                var update = Command(SQLQueries.UPDATE_БилайнПараметры,
+                    new { id = Key(original.Number), timeZone = draft.TimeZone, email = draft.EmailManager }, transaction, ct);
+                ct.ThrowIfCancellationRequested();
+                dispatched = true;
+                var affected = await connection.QuerySingleAsync<int>(update);
                 if (affected != 1) throw new BeelineRejectedException("База не подтвердила обновление одного договора.");
 
                 var saved = await ReadContractAsync(connection, transaction, original.Number, ct);
@@ -122,14 +135,15 @@ public static class BeelineData
                 await transaction.CommitAsync(CancellationToken.None);
                 return saved;
             }
-            catch (Exception e)
+            catch (Exception e) when (dispatched)
             {
-                if (committing || e is Microsoft.Data.SqlClient.SqlException sql &&
-                    (sql.Number == -2 || DbManager.IsConnectivityError(sql)))
+                if (committing || e is TimeoutException or OperationCanceledException ||
+                    e is Microsoft.Data.SqlClient.SqlException sql && (sql.Number == -2 || DbManager.IsConnectivityError(sql)) ||
+                    transaction.Connection is null)
                     throw new BeelineUnknownException(e);
                 try
                 {
-                    if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
+                    await transaction.RollbackAsync(CancellationToken.None);
                 }
                 catch (Exception rollback)
                 {
@@ -138,7 +152,7 @@ public static class BeelineData
                 if (e is BeelineRejectedException) throw;
                 throw new BeelineRejectedException("База отклонила изменение параметров договора.", e);
             }
-        });
+        }
     }
 
     private static async Task<(bool CanRead, bool CanUpdate)> ReadAccessAsync(DbConnection connection, DbTransaction? transaction,
