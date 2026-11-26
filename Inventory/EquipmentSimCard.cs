@@ -1,5 +1,11 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Serialization;
+using Dapper;
+using Microsoft.Data.SqlClient;
 using System.Text.RegularExpressions;
 using Clayzor.Lib.DALC;
 
@@ -8,6 +14,7 @@ namespace Clayzor.Lib.Entities.Inventory;
 /// <summary>Сведения SIM-карты без секретных кодов.</summary>
 public sealed class EquipmentSimCard
 {
+    private static readonly byte[] VersionKey = RandomNumberGenerator.GetBytes(32);
     /// <summary>Идентификатор оборудования.</summary>
     [Column(EquipmentColumns.КодОборудования)]
     public int EquipmentId { get; set; }
@@ -106,7 +113,7 @@ public sealed class EquipmentSimCard
     }
 
     /// <summary>Секретные коды, не входящие в общее чтение списка.</summary>
-    [NotMapped]
+    [NotMapped, JsonIgnore]
     public EquipmentSimSecrets Secrets { get; set; } = new();
 
     /// <summary>Проверяет обязательные поля и форматы номера и кодов.</summary>
@@ -131,11 +138,129 @@ public sealed class EquipmentSimCard
         return null;
     }
 
-    /// <summary>Атомарно списывает дубликат и сохраняет текущую SIM.</summary>
-    public Task SaveAsync(DbManager db, int? duplicateEquipmentId = null)
+    /// <summary>Непрозрачная версия полного исходного снимка после отдельного защищённого чтения.</summary>
+    [NotMapped, JsonIgnore]
+    public string? EditorVersion { get; internal set; }
+
+    /// <summary>Поля уже видимой строки, с которыми сверяется защищённый снимок перед открытием.</summary>
+    public EquipmentSimOriginal CaptureOriginal() =>
+        new(EquipmentId, PhoneNumber, ActivatedAtUtc, ContractId, PersonalDataPersonId, ChangedById, ChangedAt);
+
+    /// <summary>Читает один защищённый снимок SIM после серверной проверки права вызывающим сервисом.</summary>
+    public static async Task<EquipmentSimCard?> ReadEditorSnapshotAsync(DbManager db, int equipmentId)
     {
-        var command = EquipmentSimSaveBuilder.BuildSave(this, duplicateEquipmentId);
-        return db.ExecuteAsync(command.Sql, command.Parameters, commandType: CommandType.Text);
+        var row = await RunProtectedAsync(db, connection => connection.QuerySingleOrDefaultAsync<EditorRow>(
+            SQLQueries.SELECT_SIMКарта_СнимокРедактора, new { EquipmentId = equipmentId }), write: false);
+        if (row is null)
+            return null;
+        var snapshot = new EquipmentSimCard
+        {
+            EquipmentId = row.EquipmentId, PhoneNumber = row.PhoneNumber, ActivatedAtUtc = row.ActivatedAtUtc,
+            ContractId = row.ContractId, PersonalDataPersonId = row.PersonalDataPersonId,
+            ChangedById = row.ChangedById, ChangedAt = row.ChangedAt,
+            Secrets = new EquipmentSimSecrets { Pin = row.Pin, Pin2 = row.Pin2, Puk = row.Puk, Puk2 = row.Puk2 },
+        };
+        snapshot.EditorVersion = snapshot.CaptureVersion();
+        return snapshot;
+    }
+
+    /// <summary>Добавляет отсутствующую либо обновляет неизменённую SIM, атомарно списывая подтверждённый дубликат.</summary>
+    public async Task SaveAsync(DbManager db, EquipmentSimWriteMode mode, string? expectedVersion, int? duplicateEquipmentId = null)
+    {
+        EquipmentSimCard? original = mode switch
+        {
+            EquipmentSimWriteMode.Add when expectedVersion is null => null,
+            EquipmentSimWriteMode.Edit => await ReadExpectedAsync(db, EquipmentId, expectedVersion),
+            _ => throw Conflict(),
+        };
+        await ExecuteWriteAsync(db, EquipmentSimSaveBuilder.BuildSave(this, mode, original, duplicateEquipmentId));
+    }
+
+    /// <summary>Удаляет только подтверждённую исходную строку SIM.</summary>
+    public static async Task DeleteAsync(DbManager db, int equipmentId, string? expectedVersion)
+    {
+        var original = await ReadExpectedAsync(db, equipmentId, expectedVersion);
+        await ExecuteWriteAsync(db, EquipmentSimSaveBuilder.BuildDelete(original));
+    }
+
+    private static async Task<EquipmentSimCard> ReadExpectedAsync(DbManager db, int equipmentId, string? expectedVersion)
+    {
+        if (string.IsNullOrWhiteSpace(expectedVersion))
+            throw Conflict();
+        var original = await ReadEditorSnapshotAsync(db, equipmentId);
+        if (original is null || !string.Equals(expectedVersion, original.EditorVersion, StringComparison.Ordinal))
+            throw Conflict();
+        return original;
+    }
+
+    private static async Task ExecuteWriteAsync(DbManager db, EquipmentPhoneSaveCommand command)
+    {
+        var result = await RunProtectedAsync(db, connection => connection.ExecuteScalarAsync<int>(
+            command.Sql, command.Parameters, commandType: CommandType.Text), write: true);
+        if (result == -1)
+            throw new InvalidOperationException("Дубликат SIM изменился или уже списан. Сверьте актуальные данные.");
+        if (result != 1)
+            throw Conflict();
+    }
+
+    private static async Task<T> RunProtectedAsync<T>(DbManager db, Func<DbConnection, Task<T>> action, bool write)
+    {
+        try
+        {
+            return await db.RunDbAsync(async connection =>
+            {
+                try { return await action(connection); }
+                catch (DbException error)
+                {
+                    var unknown = write && (error is not SqlException sqlError || DbManager.IsConnectivityError(sqlError));
+                    throw new EquipmentSimStorageException(write, unknown);
+                }
+            });
+        }
+        catch (DbException)
+        {
+            throw new EquipmentSimStorageException(false, false);
+        }
+    }
+
+    internal string CaptureVersion()
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: true);
+        writer.Write(EquipmentId);
+        writer.Write(PhoneNumber);
+        writer.Write(ActivatedAtUtc.Ticks);
+        writer.Write(ContractId.HasValue);
+        if (ContractId is int contractId) writer.Write(contractId);
+        writer.Write(PersonalDataPersonId.HasValue);
+        if (PersonalDataPersonId is int personId) writer.Write(personId);
+        writer.Write(ChangedById);
+        writer.Write(ChangedAt.Ticks);
+        writer.Write(Secrets.Pin);
+        writer.Write(Secrets.Pin2);
+        writer.Write(Secrets.Puk);
+        writer.Write(Secrets.Puk2);
+        var bytes = stream.GetBuffer().AsSpan(0, checked((int)stream.Length));
+        try { return Convert.ToHexString(HMACSHA256.HashData(VersionKey, bytes)); }
+        finally { CryptographicOperations.ZeroMemory(bytes); }
+    }
+
+    private static InvalidOperationException Conflict() =>
+        new("Исходное состояние SIM не подтверждено. Ввод сохранён. Сверьте актуальные данные перед записью.");
+
+    private sealed class EditorRow
+    {
+        public int EquipmentId { get; set; }
+        public string PhoneNumber { get; set; } = string.Empty;
+        public DateTime ActivatedAtUtc { get; set; }
+        public int? ContractId { get; set; }
+        public int? PersonalDataPersonId { get; set; }
+        public int ChangedById { get; set; }
+        public DateTime ChangedAt { get; set; }
+        public string Pin { get; set; } = string.Empty;
+        public string Pin2 { get; set; } = string.Empty;
+        public string Puk { get; set; } = string.Empty;
+        public string Puk2 { get; set; } = string.Empty;
     }
 
     private int VatCalculation()
@@ -151,4 +276,38 @@ public sealed class EquipmentSimCard
 
     private static bool ValidCode(string? value, int min, int max) =>
         string.IsNullOrEmpty(value) || value.Length >= min && value.Length <= max && Regex.IsMatch(value, "^[0-9]+$");
+}
+
+/// <summary>Явный режим записи SIM без UPSERT.</summary>
+public enum EquipmentSimWriteMode
+{
+    /// <summary>Создание ожидаемо отсутствующей строки.</summary>
+    Add = 1,
+    /// <summary>Изменение существующей строки с ожидаемой версией.</summary>
+    Edit = 2,
+}
+
+/// <summary>Проверяемые исходные сведения SIM без PIN/PUK.</summary>
+/// <param name="EquipmentId">Ключ SIM.</param>
+/// <param name="PhoneNumber">Исходный номер телефона.</param>
+/// <param name="ActivatedAtUtc">Исходная активация UTC.</param>
+/// <param name="ContractId">Исходный договор.</param>
+/// <param name="PersonalDataPersonId">Исходное лицо ПДн.</param>
+/// <param name="ChangedById">Исходный изменивший сотрудник.</param>
+/// <param name="ChangedAt">Исходный точный timestamp.</param>
+public sealed record EquipmentSimOriginal(int EquipmentId, string PhoneNumber, DateTime ActivatedAtUtc,
+    int? ContractId, int? PersonalDataPersonId, int ChangedById, DateTime ChangedAt);
+
+/// <summary>Ошибка чтения или записи SIM без исходного SQL исключения и PIN/PUK.</summary>
+/// <param name="wasDispatched">Провайдеру передана команда записи.</param>
+/// <param name="mayHaveWritten">Исход отправленной записи неизвестен.</param>
+public sealed class EquipmentSimStorageException(bool wasDispatched, bool mayHaveWritten) : InvalidOperationException(mayHaveWritten
+    ? "Результат записи SIM неизвестен. Повторная запись заблокирована до сверки."
+    : wasDispatched ? "Запись SIM отклонена." : "Не удалось прочитать исходные сведения SIM. Команда не отправлена.")
+{
+    /// <summary>Провайдеру передана команда записи.</summary>
+    public bool WasDispatched { get; } = wasDispatched;
+
+    /// <summary>Исход отправленной записи неизвестен.</summary>
+    public bool MayHaveWritten { get; } = mayHaveWritten;
 }

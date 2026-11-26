@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.SqlTypes;
 using System.Text.RegularExpressions;
 using Clayzor.Lib.DALC;
 using Dapper;
@@ -147,15 +148,78 @@ public sealed class Equipment
         return Regex.IsMatch(NormalizeMacAddress(value), "^[0-9A-F]{12}$");
     }
 
-    /// <summary>Создаёт оборудование через sp_Оборудование_Ins и возвращает output-идентификатор.</summary>
-    public async Task<int> InsertAsync(DbManager db)
+    /// <summary>Проверяет актуального сотрудника и исходные данные перед sp_Оборудование_Ins.</summary>
+    public async Task<int> InsertAsync(DbManager db, string? windowsPrincipal, int expectedEmployeeId,
+        CancellationToken cancellationToken = default, Func<Equipment, CancellationToken, Task>? beforeDispatch = null)
     {
-        var parameters = CreateInsertParameters();
-        await db.ExecuteAsync(SQLQueries.SP_Оборудование_Ins, parameters);
-        Id = parameters.Get<int>("@КодОборудования");
-        if (Id <= 0)
-            throw new InvalidOperationException("Хранимая процедура не вернула идентификатор созданного оборудования.");
+        var request = (Equipment)MemberwiseClone();
+        Id = await request.InsertVerifiedAsync(db, windowsPrincipal, expectedEmployeeId, cancellationToken, beforeDispatch);
         return Id;
+    }
+
+    private async Task<int> InsertVerifiedAsync(DbManager db, string? windowsPrincipal, int expectedEmployeeId,
+        CancellationToken cancellationToken, Func<Equipment, CancellationToken, Task>? beforeDispatch)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var actor = await Employee.GetCurrentWithRolesAsync(db, windowsPrincipal, cancellationToken);
+        if (expectedEmployeeId <= 0 || actor is null || actor.Id != expectedEmployeeId)
+            throw new UnauthorizedAccessException("Не удалось подтвердить текущего сотрудника для создания оборудования.");
+        if (!actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
+            throw new UnauthorizedAccessException("Нет права на создание оборудования.");
+
+        if (ReceivedAtUtc < SqlDateTime.MinValue.Value || ReceivedAtUtc > SqlDateTime.MaxValue.Value)
+            throw new InvalidOperationException("Укажите допустимую дату и время поступления.");
+        if (EquipmentTypeId is not > 0 || ModelId is not > 0 || OwnerId is not > 0 || LocationId is not > 0)
+            throw new InvalidOperationException("Укажите тип, модель, владельца и расположение оборудования.");
+        if (LocationId == (int)Расположения.На_руках && EmployeeId is not > 0)
+            throw new InvalidOperationException("Для расположения «На руках» укажите ответственного сотрудника.");
+        if (!IsValidMacAddress(MacAddress) || !IsValidMacAddress(MacAddress2) || !IsValidMacAddress(MacAddressIlo))
+            throw new InvalidOperationException("MAC-адрес должен содержать 12 шестнадцатеричных символов.");
+
+        var type = (await db.QueryRequiredAsync<EquipmentType>(
+            SQLQueries.SELECT_ТипОборудованияПоИдентификатору, new { Id = EquipmentTypeId }, cancellationToken)).SingleOrDefault();
+        var model = (await db.QueryRequiredAsync<EquipmentModel>(
+            SQLQueries.SELECT_МодельОборудованияДляРедактирования, new { Id = ModelId }, cancellationToken)).SingleOrDefault();
+        if (type is null || model is null || model.EquipmentTypeId != type.Id)
+            throw new InvalidOperationException("Модель или тип оборудования недоступны либо не соответствуют друг другу.");
+        if (type.IsSerialNumberRequired > 0 && string.IsNullOrWhiteSpace(SerialNumber))
+            throw new InvalidOperationException("Укажите серийный номер.");
+        if (IsAccounting && !await CanUseAccountingAsync(db, actor, OwnerId, cancellationToken))
+            throw new UnauthorizedAccessException("Бухгалтерский учёт недоступен для выбранного владельца.");
+        if (TenantId is { } tenantId)
+        {
+            var tenant = tenantId > 0
+                ? (await db.QueryRequiredAsync<PersonLookup>(SQLQueries.SELECT_ТелефонЗаказчикПоИдентификатору,
+                    new { Id = tenantId }, cancellationToken)).SingleOrDefault()
+                : null;
+            if (tenant?.Id != tenantId)
+                throw new InvalidOperationException("Выберите действующего арендатора из списка заказчиков.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var parameters = CreateInsertParameters();
+        if (beforeDispatch is not null)
+            await beforeDispatch(this, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        await db.ExecuteAsync(SQLQueries.SP_Оборудование_Ins, parameters);
+        var id = parameters.Get<int>("@КодОборудования");
+        if (id <= 0)
+            throw new InvalidOperationException("Хранимая процедура не вернула идентификатор созданного оборудования.");
+        return id;
+    }
+
+    /// <summary>Проверяет отдельно назначение роли сотруднику и ведение учёта лицом.</summary>
+    public static async Task<bool> CanUseAccountingAsync(DbManager db, Employee? actor, int? personId,
+        CancellationToken cancellationToken = default)
+    {
+        if (personId is not > 0 || actor is null ||
+            !(actor.HasRole(Роли.Бухгалтер, EmployeeRoleScope.PersonOrGlobal, personId) ||
+              actor.HasRole(Роли.Главный_бухгалтер_1С, EmployeeRoleScope.PersonOrGlobal, personId)))
+            return false;
+
+        var flags = await db.QueryRequiredAsync<int>(SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет,
+            new { PersonId = personId.Value }, cancellationToken);
+        return flags.SingleOrDefault() == 1;
     }
 
     /// <summary>Обновляет основные поля существующего оборудования по подтверждённому legacy-контракту.</summary>

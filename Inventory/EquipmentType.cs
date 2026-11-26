@@ -15,11 +15,40 @@ public sealed class EquipmentType : ILookupEntity
     /// <summary>Имя русского наименования типа в SQL.</summary>
     public const string NameColumnName = EquipmentTypeColumns.ТипОборудования;
 
+    /// <summary>Имя проекции отображаемого названия в меню.</summary>
+    public const string MenuNameColumnName = nameof(MenuName);
+
+    // Пробельные символы, которые распознаёт string.IsNullOrWhiteSpace.
+    private const string MenuNonBlankPattern =
+        "%[^ \u0009\u000A\u000B\u000C\u000D\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005" +
+        "\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000]%";
+
     /// <summary>Загружает меню типов с фильтром и порядком из доверенного SQL-билдера.</summary>
     public static Task<IEnumerable<EquipmentType>> ReadMenuAsync(DbManager db, CancellationToken cancellationToken = default,
-        string? gridPredicate = null, DynamicParameters? parameters = null, string? gridOrderBy = null) =>
+        string? gridPredicate = null, DynamicParameters? parameters = null, string? gridOrderBy = null, Employee? employee = null) =>
         db.QueryRequiredAsync<EquipmentType>(string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ТипыОборудованияДляМеню,
-            gridPredicate ?? "1=1", gridOrderBy ?? "КодТипаОборудования ASC"), parameters, cancellationToken);
+            gridPredicate ?? "1=1", gridOrderBy ?? IdColumnName + " ASC"), CreateMenuParameters(employee, parameters), cancellationToken);
+
+    /// <summary>Загружает ограниченный набор уникальных названий из той же языковой проекции меню.</summary>
+    public static Task<IEnumerable<string?>> ReadDistinctMenuNamesAsync(DbManager db, Employee employee, int limit,
+        string? gridPredicate, DynamicParameters parameters, CancellationToken cancellationToken)
+    {
+        var menuParameters = CreateMenuParameters(employee, parameters);
+        menuParameters.Add("MenuLimit", limit);
+        return db.QueryRequiredAsync<string?>(string.Format(CultureInfo.InvariantCulture,
+            SQLQueries.SELECT_НазванияТиповОборудованияДляМеню, gridPredicate ?? "1=1"), menuParameters, cancellationToken);
+    }
+
+    private static DynamicParameters CreateMenuParameters(Employee? employee, DynamicParameters? parameters)
+    {
+        var menuParameters = new DynamicParameters(parameters);
+        menuParameters.Add("MenuPrefersRussian", employee?.PrefersRussian ?? true);
+        menuParameters.Add("MenuNonBlankPattern", MenuNonBlankPattern);
+        return menuParameters;
+    }
+
+    /// <summary>Наименование из SQL-проекции меню на языке сотрудника.</summary>
+    public string MenuName { get; set; } = string.Empty;
 
     /// <summary>Возвращает название на языке сотрудника с резервным русским названием.</summary>
     public string GetMenuName(Employee employee) => employee.PrefersRussian || string.IsNullOrWhiteSpace(NameEn)

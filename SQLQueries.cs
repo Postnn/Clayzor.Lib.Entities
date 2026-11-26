@@ -375,10 +375,31 @@ WHERE КодМедицинскогоАнализа = @Id    -- идентифи�
     public const string SELECT_ТипыОборудованияДляМеню = @"
 SELECT КодТипаОборудования, -- идентификатор типа
        ТипОборудования, -- русское наименование
-       ТипОборудованияЛат -- английское наименование
-FROM dbo.ТипыОборудования
+       ТипОборудованияЛат, -- латинское наименование
+       MenuName -- отображаемое наименование
+FROM (" + SOURCE_ТипыОборудованияДляМеню + @") AS MenuTypes
 WHERE {0}
 ORDER BY {1}";
+
+    /// <summary>Отображаемые значения колонки названия меню. {0}: WHERE из доверенного билдера.</summary>
+    public const string SELECT_НазванияТиповОборудованияДляМеню = @"
+SELECT DISTINCT TOP (@MenuLimit) NULLIF(MenuName, N'') AS MenuValue -- наименование или пустое значение
+FROM (" + SOURCE_ТипыОборудованияДляМеню + @") AS MenuTypes
+WHERE {0}
+ORDER BY MenuValue";
+
+    /// <summary>Языковая проекция названия меню. Параметры: MenuPrefersRussian, MenuNonBlankPattern.</summary>
+    private const string SOURCE_ТипыОборудованияДляМеню = @"
+SELECT КодТипаОборудования, -- идентификатор типа
+       ТипОборудования, -- русское наименование
+       ТипОборудованияЛат, -- латинское наименование
+       CASE WHEN @MenuPrefersRussian = 0
+                 AND ТипОборудованияЛат COLLATE Latin1_General_BIN2 LIKE @MenuNonBlankPattern
+            THEN ТипОборудованияЛат
+            ELSE ТипОборудования
+       END AS MenuName -- отображаемое наименование с русским резервом
+FROM dbo.ТипыОборудования
+";
 
     /// <summary>
     /// Поиск типов оборудования по наименованию. Параметры: Search, LimitPlusOne, SortByName.
@@ -494,11 +515,10 @@ INSERT INTO МоделиОборудования (
 ) VALUES (
     @ResourceId, @EquipmentTypeId, @Name, @PartNumber, @Cpu, @MonitorSize,
     @MemoryTypeId, @MemoryBanks, @IsMultimedia, @NetworkInterfaces, @NetworkName,
-    @Driver, @LifeTime, @PhoneTemplate, @Description);
+    @Driver, @LifeTime, N'', @Description);
 SELECT CAST(@@IDENTITY AS int) AS Id; -- идентификатор созданной модели";
 
-    /// <summary>Обновление модели оборудования.</summary>
-    public const string UPDATE_МоделиОборудования = @"
+    private const string UPDATE_МоделиОборудования_Поля = @"
 UPDATE МоделиОборудования SET
     КодРесурса = @ResourceId,              -- ресурс
     КодТипаОборудования = @EquipmentTypeId,-- тип оборудования
@@ -513,15 +533,40 @@ UPDATE МоделиОборудования SET
     НазваниеNet = @NetworkName,            -- название сетевого интерфейса
     Драйвер = @Driver,                     -- сведения о драйвере
     Ресурс = @LifeTime,                    -- срок службы
-    ШаблонТелефона = @PhoneTemplate,       -- шаблон телефона
-    Примечания = @Description              -- примечания
-WHERE КодМоделиОборудования = @Id";
+    Примечания = @Description              -- примечания";
 
-    /// <summary>Обновление только шаблона телефона. Параметры: Id, PhoneTemplate.</summary>
+    private const string UPDATE_МоделиОборудования_ИсходнаяВерсия = @"
+WHERE КодМоделиОборудования = @Id
+  AND КодТипаОборудования = @ExpectedTypeId
+  AND (Изменено = @ExpectedChangedAt OR (Изменено IS NULL AND @ExpectedChangedAt IS NULL))";
+
+    private const string UPDATE_МоделиОборудования_ИсходныйШаблон = @"
+  AND DATALENGTH(ISNULL(CONVERT(nvarchar(max), ШаблонТелефона), N'')) = DATALENGTH(@ExpectedPhoneTemplate)
+  AND CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), ШаблонТелефона), N''))
+      = CONVERT(varbinary(max), @ExpectedPhoneTemplate)";
+
+    private const string UPDATE_МоделиОборудования_Результат = @";
+SELECT @@ROWCOUNT; -- число изменённых строк";
+
+    /// <summary>Обновляет поля модели по исходным типу и версии, сохраняя отдельный шаблон.</summary>
+    public const string UPDATE_МоделиОборудования = UPDATE_МоделиОборудования_Поля +
+        UPDATE_МоделиОборудования_ИсходнаяВерсия + UPDATE_МоделиОборудования_Результат;
+
+    /// <summary>При смене типа на отличный от IP-телефона очищает только тот шаблон, который видел пользователь.</summary>
+    public const string UPDATE_МоделиОборудования_ОчиститьШаблон = UPDATE_МоделиОборудования_Поля + @"
+    , ШаблонТелефона = N'' -- очистка при смене типа" +
+        UPDATE_МоделиОборудования_ИсходнаяВерсия + @"
+  AND КодТипаОборудования <> @EquipmentTypeId
+  AND @EquipmentTypeId <> @PhoneEquipmentTypeId" +
+        UPDATE_МоделиОборудования_ИсходныйШаблон + UPDATE_МоделиОборудования_Результат;
+
+    /// <summary>Обновляет только шаблон по исходной версии и тексту сохранённой модели IP-телефона.</summary>
     public const string UPDATE_МоделиОборудования_ШаблонТелефона = @"
 UPDATE МоделиОборудования SET
-    ШаблонТелефона = @PhoneTemplate -- шаблон настройки телефона
-WHERE КодМоделиОборудования = @Id";
+    ШаблонТелефона = @PhoneTemplate -- шаблон настройки телефона" +
+        UPDATE_МоделиОборудования_ИсходнаяВерсия + @"
+  AND КодТипаОборудования = @PhoneEquipmentTypeId" +
+        UPDATE_МоделиОборудования_ИсходныйШаблон + UPDATE_МоделиОборудования_Результат;
 
     /// <summary>Список типов памяти.</summary>
     public const string SELECT_ТипыПамяти = @"
@@ -1208,6 +1253,16 @@ FROM vwОборудованиеУчётныеЗаписи
 WHERE КодОборудования = @EquipmentId
   AND Логин = @Login";
 
+    /// <summary>Защищённый снимок полной строки учётной записи с фиксированной серверной опцией блокировки.</summary>
+    public const string SELECT_ОборудованиеУчётнаяЗаписьСнимок = @"
+SELECT КодОборудования,   -- оборудование
+       Логин,             -- логин
+       Пароль,            -- пароль из отдельного авторизованного чтения
+       ОграниченныеПрава, -- признак ограниченных прав
+       Примечание         -- примечание
+FROM ОборудованиеУчётныеЗаписи {0}
+WHERE КодОборудования = @EquipmentId AND Логин = @Login";
+
     /// <summary>Добавление учётной записи оборудования.</summary>
     public const string INSERT_ОборудованиеУчётныеЗаписи = @"
 INSERT ОборудованиеУчётныеЗаписи (КодОборудования, Логин, Пароль, ОграниченныеПрава, Примечание)
@@ -1220,13 +1275,15 @@ SET Пароль = @Пароль,             -- новый пароль
     ОграниченныеПрава = @ОграниченныеПрава, -- признак ограниченных прав
     Примечание = @Примечание      -- примечание
 WHERE КодОборудования = @КодОборудования
-  AND Логин = @Логин";
+  AND Логин = @Логин;
+SELECT @@ROWCOUNT";
 
     /// <summary>Удаление учётной записи по составному ключу.</summary>
     public const string DELETE_ОборудованиеУчётныеЗаписи = @"
 DELETE ОборудованиеУчётныеЗаписи
 WHERE КодОборудования = @КодОборудования
-  AND Логин = @Логин";
+  AND Логин = @Логин;
+SELECT @@ROWCOUNT";
 
     /// <summary>Фактический тип и признаки дочерних секций сохранённого оборудования. Параметр: EquipmentId.</summary>
     public const string SELECT_ОборудованиеТипДляДочернихЗаписей = @"
@@ -1427,38 +1484,70 @@ WHERE S.НомерТелефона = @PhoneNumber
   AND EXISTS (SELECT 1 FROM vwОборудование E
               WHERE E.КодОборудования = S.КодОборудования AND E.Списано IS NULL)";
 
-    /// <summary>Добавление или обновление SIM.</summary>
-    public const string UPDATE_SIMКарты = @"
-IF EXISTS (SELECT 1 FROM vwSIMКарты WHERE КодОборудования = @КодОборудования)
-    UPDATE vwSIMКарты
-    SET НомерТелефона = @НомерТелефона, -- номер телефона
-        От = @От, -- активация UTC
-        КодДоговора = @КодДоговора, -- договор
-        КодЛицаПерсональныхДанных = @КодЛицаПерсональныхДанных, -- лицо ПДн
-        PIN = @PIN, -- PIN
-        PIN2 = @PIN2, -- PIN2
-        PUK = @PUK, -- PUK
-        PUK2 = @PUK2 -- PUK2
-    WHERE КодОборудования = @КодОборудования
-ELSE
-    INSERT vwSIMКарты (
-        КодОборудования, -- оборудование
-        НомерТелефона, -- номер телефона
-        От, -- активация UTC
-        КодДоговора, -- договор
-        КодЛицаПерсональныхДанных, -- лицо ПДн
-        PIN, -- PIN
-        PIN2, -- PIN2
-        PUK, -- PUK
-        PUK2 -- PUK2
-    )
-    VALUES (@КодОборудования, @НомерТелефона, @От, @КодДоговора, @КодЛицаПерсональныхДанных,
-            @PIN, @PIN2, @PUK, @PUK2)";
+    /// <summary>Полный снимок одной SIM для отдельного чтения с проверенным правом на коды.</summary>
+    public const string SELECT_SIMКарта_СнимокРедактора = @"
+SELECT КодОборудования AS EquipmentId, -- ключ SIM
+       НомерТелефона AS PhoneNumber, -- номер телефона
+       От AS ActivatedAtUtc, -- исходная активация UTC
+       КодДоговора AS ContractId, -- договор
+       КодЛицаПерсональныхДанных AS PersonalDataPersonId, -- лицо ПДн
+       Изменил AS ChangedById, -- изменивший сотрудник
+       Изменено AS ChangedAt, -- время последнего изменения
+       PIN AS Pin, PIN2 AS Pin2, -- коды доступа
+       PUK AS Puk, PUK2 AS Puk2 -- коды разблокировки
+FROM vwSIMКарты
+WHERE КодОборудования = @EquipmentId";
 
-    /// <summary>Удаление только сведений SIM. Параметр: EquipmentId.</summary>
+    /// <summary>Проверка ожидаемого отсутствия SIM в транзакции добавления.</summary>
+    public const string SELECT_SIMКарты_ОжидаетсяОтсутствие = @"
+IF EXISTS (SELECT 1 FROM vwSIMКарты WITH (UPDLOCK, HOLDLOCK) WHERE КодОборудования = @КодОборудования)";
+
+    /// <summary>Обновление существующей SIM с исходным состоянием в WHERE.</summary>
+    public const string UPDATE_SIMКарты = @"
+UPDATE vwSIMКарты
+SET НомерТелефона = @НомерТелефона, -- номер телефона
+    От = @От, -- активация UTC
+    КодДоговора = @КодДоговора, -- договор
+    КодЛицаПерсональныхДанных = @КодЛицаПерсональныхДанных, -- лицо ПДн
+    PIN = @PIN, -- PIN
+    PIN2 = @PIN2, -- PIN2
+    PUK = @PUK, -- PUK
+    PUK2 = @PUK2 -- PUK2
+WHERE КодОборудования = @КодОборудования";
+
+    /// <summary>Создание новой SIM после проверки отсутствия строки.</summary>
+    public const string INSERT_SIMКарты = @"
+INSERT vwSIMКарты (
+    КодОборудования, -- оборудование
+    НомерТелефона, -- номер телефона
+    От, -- активация UTC
+    КодДоговора, -- договор
+    КодЛицаПерсональныхДанных, -- лицо ПДн
+    PIN, -- PIN
+    PIN2, -- PIN2
+    PUK, -- PUK
+    PUK2 -- PUK2
+)
+VALUES (@КодОборудования, @НомерТелефона, @От, @КодДоговора, @КодЛицаПерсональныхДанных,
+        @PIN, @PIN2, @PUK, @PUK2);";
+
+    /// <summary>Удаление только сведений SIM с исходным состоянием в WHERE.</summary>
     public const string DELETE_ID_SIMКарты = @"
 DELETE vwSIMКарты
 WHERE КодОборудования = @EquipmentId";
+
+    /// <summary>Проверка точных исходных полей SIM в операторе изменения или удаления.</summary>
+    public const string WHERE_SIMКарты_ИсходноеСостояние = @"
+  AND CONVERT(varbinary(100), CONVERT(nvarchar(50), НомерТелефона)) = CONVERT(varbinary(100), @ИсходныйНомер)
+  AND От = @ИсходноеОт
+  AND (КодДоговора = @ИсходныйДоговор OR (КодДоговора IS NULL AND @ИсходныйДоговор IS NULL))
+  AND (КодЛицаПерсональныхДанных = @ИсходноеЛицоПДн OR (КодЛицаПерсональныхДанных IS NULL AND @ИсходноеЛицоПДн IS NULL))
+  AND Изменил = @ИсходныйИзменил
+  AND Изменено = @ИсходноеИзменено
+  AND CONVERT(varbinary(8), CONVERT(nvarchar(4), PIN)) = CONVERT(varbinary(8), @ИсходныйPIN)
+  AND CONVERT(varbinary(16), CONVERT(nvarchar(8), PIN2)) = CONVERT(varbinary(16), @ИсходныйPIN2)
+  AND CONVERT(varbinary(16), CONVERT(nvarchar(8), PUK)) = CONVERT(varbinary(16), @ИсходныйPUK)
+  AND CONVERT(varbinary(16), CONVERT(nvarchar(8), PUK2)) = CONVERT(varbinary(16), @ИсходныйPUK2);";
 
     /// <summary>Незавершённые договоры мобильной связи. Параметры: Search, LimitPlusOne.</summary>
     public const string SELECT_ДоговорыМобильнойСвязи = @"
@@ -2263,6 +2352,26 @@ SELECT P.КодТелефонногоНомера, -- идентификатор
 FROM vwТелефонныеНомераИзменение P
 LEFT JOIN Сотрудники E ON E.КодСотрудника = P.Изменил
 WHERE P.КодТелефонногоНомера = @Id";
+
+    private const string ROLLBACK_ТелефонКонфликтВерсии = @"
+BEGIN
+    ROLLBACK TRANSACTION;
+    SELECT @VersionConflictStatus; -- запись не изменена, транзакция точно отменена
+    RETURN;
+END;";
+
+    /// <summary>Проверяет исходную версию телефона и удерживает блокировку до конца текущей транзакции.</summary>
+    public const string CHECK_ТелефонИсходнаяВерсияДляСохранения = @"
+IF NOT EXISTS (
+    SELECT 1
+    FROM vwТелефонныеНомераИзменение WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодТелефонногоНомера = @Id
+      AND Изменено = @ExpectedChangedAt
+)" + ROLLBACK_ТелефонКонфликтВерсии;
+
+    /// <summary>Отменяет основной UPDATE и изменения связей, если UPDATE не изменил ровно одну строку.</summary>
+    public const string CHECK_ТелефонОбновленаОднаСтрока = @"
+IF @@ROWCOUNT <> 1" + ROLLBACK_ТелефонКонфликтВерсии;
 
     /// <summary>Обновление 20 полей телефона. Параметры соответствуют PhoneSaveBuilder.</summary>
     public const string UPDATE_ТелефонДляФормы = @"
@@ -3328,6 +3437,51 @@ ELSE
                CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','INSERT'),0)) AS CanInsert,
                CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','UPDATE'),0)) AS CanUpdate,
                CONVERT(bit, ISNULL(HAS_PERMS_BY_NAME(N'dbo.vwАтрибутыТелефоновПула','OBJECT','DELETE'),0)) AS CanDelete;
+        """;
+
+    /// <summary>Уникальные типы для подстановок по правилам редактора телефонных шаблонов.</summary>
+    internal const string SELECT_ТипыАтрибутовДляШаблона = """
+        --уникальный список аттрибутов
+        SET NOCOUNT ON
+        DECLARE @ТипыАтрибутовТелефонов TABLE (ТипАтрибутаТелефона varchar(50) PRIMARY KEY, Описание varchar(1000))
+        DECLARE @Разобрать TABLE (Код int IDENTITY(1,1) ,ТипАтрибутаТелефона varchar(50), Описание varchar(1000))
+
+        INSERT @ТипыАтрибутовТелефонов SELECT ТипАтрибутаТелефона, Описание FROM dbo.ТипыАтрибутовТелефонов WHERE ТипАтрибутаТелефона NOT LIKE '%[0-9]'
+        INSERT @Разобрать SELECT ТипАтрибутаТелефона, Описание FROM dbo.ТипыАтрибутовТелефонов WHERE ТипАтрибутаТелефона LIKE '%[0-9]'
+
+        DECLARE @Код int = 0, @ТипАтрибутаТелефона varchar(50), @Описание varchar(1000)
+
+        WHILE EXISTS(SELECT * FROM @Разобрать WHERE Код > @Код)
+        BEGIN
+            SELECT TOP 1 @Код = Код, @ТипАтрибутаТелефона = ТипАтрибутаТелефона, @Описание = Описание FROM @Разобрать WHERE Код > @Код ORDER BY Код
+
+            WHILE LEN(@ТипАтрибутаТелефона) > 0
+            BEGIN
+                IF RIGHT(@ТипАтрибутаТелефона, 1) LIKE '[0-9]'
+                    SET @ТипАтрибутаТелефона = LEFT(@ТипАтрибутаТелефона, LEN(@ТипАтрибутаТелефона)-1)
+                ELSE
+                    BREAK
+            END
+
+            WHILE LEN(@Описание) > 0
+            BEGIN
+                IF RIGHT(@Описание, 1) LIKE '[0-9]'
+                    SET @Описание = LEFT(@Описание, LEN(@Описание)-1)
+                ELSE
+                    BREAK
+            END
+
+            IF LEN(@ТипАтрибутаТелефона)=0
+                SELECT TOP 1 @ТипАтрибутаТелефона = ТипАтрибутаТелефона FROM @Разобрать WHERE Код = @Код
+
+            IF LEN(@Описание)=0
+                SELECT TOP 1 @Описание = Описание FROM @Разобрать WHERE Код = @Код
+
+            IF NOT EXISTS(SELECT * FROM @ТипыАтрибутовТелефонов  WHERE ТипАтрибутаТелефона = @ТипАтрибутаТелефона)
+                INSERT @ТипыАтрибутовТелефонов VALUES(@ТипАтрибутаТелефона, @Описание)
+        END
+
+        SELECT ТипАтрибутаТелефона AS [Type], Описание AS [Description] FROM @ТипыАтрибутовТелефонов ORDER BY ТипАтрибутаТелефона
         """;
 
     /// <summary>Три набора данных — пул, тип, строка значения с аудитом. Режим блокировки задаёт код Entities.</summary>

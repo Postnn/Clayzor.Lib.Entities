@@ -3,6 +3,8 @@ namespace Clayzor.Lib.Entities;
 /// <summary>Фиксированные записи таблицы «Запросы», колонка «КодЗапроса».</summary>
 public enum Запросы
 {
+    /// <summary>Оборудование.</summary>
+    Оборудование = 1001,
     /// <summary>Модели оборудования.</summary>
     Модели_оборудования = 1003,
     /// <summary>Территории.</summary>
