@@ -40,13 +40,13 @@ public static class DutyData
 
     /// <summary>Пишет план либо факт под свежей идентичностью и актуальной версией. Отгул и расписание используют одну транзакцию.</summary>
     public static async Task<DutyRow> SaveAsync(DbManager db, string? principal, int expectedActor, DutyRow? original,
-        DutyDraft draft, CancellationToken ct)
+        DutyDraft draft, CancellationToken ct, bool? expectedFact = null)
     {
         try
         {
             var actor = await Employee.GetCurrentAsync(db, principal, ct);
             if (actor?.Id != expectedActor)
-                throw new DutyRejectedException("Не удалось подтвердить текущего сотрудника.");
+                throw new DutyRejectedException("Не удалось подтвердить текущего сотрудника.", kind: DutyRejectionKind.AccessDenied);
             var validation = draft.Validate(false, null);
             if (validation is not null) throw new DutyRejectedException(validation);
             if (draft.Date == DateOnly.MinValue || draft.Date == DateOnly.MaxValue)
@@ -54,7 +54,7 @@ public static class DutyData
         }
         catch (Exception e) when (e is not DutyRejectedException)
         {
-            throw new DutyRejectedException("Проверка перед сохранением завершилась ошибкой. Запись не начата.", e);
+            throw new DutyRejectedException("Проверка перед сохранением завершилась ошибкой. Запись не начата.", e, DutyRejectionKind.Infrastructure);
         }
 
         return await db.RunDbAsync(async connection =>
@@ -65,18 +65,22 @@ public static class DutyData
             {
                 var context = await ReadContextAsync(connection, transaction, ct);
                 if (!(original is null ? context.CanInsert : context.CanUpdate))
-                    throw new DutyRejectedException("Сохранение дежурства недоступно в текущем SQL-контексте.");
+                    throw new DutyRejectedException("Сохранение дежурства недоступно в текущем SQL-контексте.", kind: DutyRejectionKind.AccessDenied);
                 var date = draft.Date!.Value;
                 if (original is not null && DateOnly.FromDateTime(original.DutyDate) != date)
                     throw new DutyRejectedException("Дата существующего дежурства не изменяется.");
 
                 var current = await ReadRowAsync(connection, transaction, date, ct);
-                if (current != original)
-                    throw new DutyRejectedException("Дежурство изменилось или дата уже занята. Перечитайте карточку.");
-                if (current?.Closed != 0 && current is not null)
-                    throw new DutyRejectedException("Закрытое дежурство нельзя изменить.");
+                if (original is null && current is not null)
+                    throw new DutyRejectedException("На эту дату уже назначено дежурство.", kind: DutyRejectionKind.DateOccupied);
+                if (current is { Closed: not 0 })
+                    throw new DutyRejectedException("Закрытое дежурство нельзя изменить.", kind: DutyRejectionKind.Closed);
+                if (!DutyRow.MatchesVersion(current, original))
+                    throw new DutyRejectedException("Дежурство изменилось после открытия карточки.", kind: DutyRejectionKind.Stale);
 
                 var fact = current is not null && date < context.BusinessDay;
+                if (expectedFact is { } displayedFact && fact != displayedFact)
+                    throw new DutyRejectedException("Серверный день изменился. Проверьте актуальный режим дежурства.", kind: DutyRejectionKind.CalendarChanged);
                 if (!fact && (draft.Confirmation is not null || draft.Close || draft.WantsTimeOff))
                     throw new DutyRejectedException("Подтверждение доступно только для прошедшего дежурства.");
                 if (fact && current!.PlannedId != draft.PlannedId)
@@ -109,7 +113,7 @@ public static class DutyData
                 else if (e is SqlException { Number: not (3609 or 50000) })
                     throw;
                 throw e is DutyRejectedException rejected ? rejected :
-                    new DutyRejectedException("Операция отклонена. Изменения расписания и отгула отменены.", e);
+                    new DutyRejectedException("Операция отклонена. Изменения расписания и отгула отменены.", e, DutyRejectionKind.Infrastructure);
             }
         });
     }

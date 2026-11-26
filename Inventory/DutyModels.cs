@@ -23,7 +23,14 @@ public enum DutyConfirmation
 /// <summary>План и фактические данные дежурства, включая версию строки.</summary>
 public sealed record DutyRow(DateTime DutyDate, int PlannedId, int? ActualId, int? EmployerId, byte? WorkDay,
     decimal? Payment, DateTime? TimeOff, byte Closed, int ChangedById, DateTime ChangedAt, string? PlannedName,
-    string? ActualName, string? ChangedByName);
+    string? ActualName, string? ChangedByName)
+{
+    /// <summary>Сравнивает значения расписания и аудита без подписей из справочников.</summary>
+    public static bool MatchesVersion(DutyRow? left, DutyRow? right) => WithoutNames(left) == WithoutNames(right);
+
+    private static DutyRow? WithoutNames(DutyRow? row) =>
+        row is null ? null : row with { PlannedName = null, ActualName = null, ChangedByName = null };
+}
 
 /// <summary>Редактируемые данные карточки. Даты отражают календарные дни.</summary>
 public sealed record DutyDraft(DateOnly? Date, int? PlannedId, DutyConfirmation? Confirmation = null, int? ActualId = null,
@@ -80,8 +87,32 @@ public sealed record DutyEngineer(int Id, string Name, int? Total, int? Weekends
     public string Statistics => Total is { } total ? $"{total} (в вых: {Weekends ?? 0})" : "";
 }
 
+/// <summary>Предметная причина подтверждённого отказа записи дежурства.</summary>
+public enum DutyRejectionKind
+{
+    /// <summary>Проверка введённых значений.</summary>
+    Validation,
+    /// <summary>Запись уже существует на выбранную дату.</summary>
+    DateOccupied,
+    /// <summary>Запись изменилась или исчезла.</summary>
+    Stale,
+    /// <summary>Запись закрыта.</summary>
+    Closed,
+    /// <summary>Изменился серверный день, определяющий ветвь записи.</summary>
+    CalendarChanged,
+    /// <summary>Сотрудник или SQL-контекст не подтвердили право операции.</summary>
+    AccessDenied,
+    /// <summary>Отказ проверки или записи с подтверждённым отсутствием результата.</summary>
+    Infrastructure,
+}
+
 /// <summary>Операция отклонена до подтверждённой записи.</summary>
-public sealed class DutyRejectedException(string message, Exception? inner = null) : InvalidOperationException(message, inner);
+public sealed class DutyRejectedException(string message, Exception? inner = null,
+    DutyRejectionKind kind = DutyRejectionKind.Validation) : InvalidOperationException(message, inner)
+{
+    /// <summary>Причина отказа для выбора действий редактора.</summary>
+    public DutyRejectionKind Kind { get; } = kind;
+}
 
 /// <summary>Форматы календарного ключа карточки.</summary>
 public static class DutyKey
