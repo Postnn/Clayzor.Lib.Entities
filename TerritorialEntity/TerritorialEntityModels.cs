@@ -124,7 +124,16 @@ public sealed record TerritorialEntityTreeRow
 public sealed record TerritorialEntityTreeSearch(int Total, IReadOnlyList<TerritorialEntityTreeRow> Rows);
 
 /// <summary>Доказанный отказ до записи либо отказ, после которого транзакция не была подтверждена.</summary>
-public sealed class TerritorialEntityRuleException(string message) : InvalidOperationException(message);
+public sealed class TerritorialEntityRuleException : InvalidOperationException
+{
+    /// <summary>Создаёт предметный отказ, не относящийся к конкурентному изменению.</summary>
+    public TerritorialEntityRuleException(string message) : this(message, false) { }
+
+    internal TerritorialEntityRuleException(string message, bool baselineConflict) : base(message) => BaselineConflict = baselineConflict;
+
+    /// <summary>Прочитанная в транзакции запись отличается от исходного снимка, в том числе при удалении.</summary>
+    public bool BaselineConflict { get; }
+}
 
 /// <summary>Общие для формы и доменного сохранения правила схемы и ввода.</summary>
 public static class TerritorialEntityRules

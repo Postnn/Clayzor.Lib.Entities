@@ -301,7 +301,8 @@ public static class TerritorialEntityData
         });
 
     private static DbString Ansi(string value, int length) => new() { Value = value, IsAnsi = true, Length = length };
-    private static TerritorialEntityRuleException Changed() => new("Запись изменилась или была удалена. Обновите форму перед повторным действием.");
+    private static TerritorialEntityRuleException Changed() =>
+        new("Запись изменилась или была удалена. Обновите форму перед повторным действием.", baselineConflict: true);
     private static UnauthorizedAccessException Denied() => new("Для этой операции нет актуального разрешения.");
 
     private static void CheckValidation(IReadOnlyList<string> errors)

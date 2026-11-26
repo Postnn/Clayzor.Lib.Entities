@@ -104,7 +104,7 @@ public sealed class EquipmentLicense
     {
         КодОборудования = EquipmentId,
         ОжидаетсяСуществующий = ExpectedExisting ? 1 : 0,
-        ИсходноеИзменено = ChangedAt,
+        ИсходноеИзменено = ExpectedExisting ? ChangedAt : (DateTime?)null,
         КодТипаЛицензирования = LicenseTypeId,
         НомерЛицензиата = LicenseeNumber ?? string.Empty,
         URLПроверкиЛицензии = VerificationUrl ?? string.Empty,
