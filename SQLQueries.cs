@@ -3177,11 +3177,11 @@ ELSE
     internal const string SELECT_РегламентныеРаботы = """
         SELECT GETUTCDATE(); -- текущее время UTC SQL Server
         SELECT КодРегламентныхРабот AS Id, -- ключ работы
-               DATEADD(MINUTE, DATEDIFF(MINUTE, GETDATE(), GETUTCDATE()), ВыполнитьДо) AS Deadline, -- срок в UTC
+               ВыполнитьДо AS Deadline, -- локальный срок в часовом поясе источника
                РегламентнаяРабота AS Name, -- название
                Ответственный AS Responsible, -- назначенный ответственный
                Ссылка AS Instruction, -- инструкция
-               DATEADD(MINUTE, DATEDIFF(MINUTE, GETDATE(), GETUTCDATE()), ПоследнееВыполнение) AS LastCompleted, -- последнее выполнение в UTC
+               ПоследнееВыполнение AS LastCompleted, -- локальное время выполнения из GETDATE() триггера
                Сотрудник AS EmployeeName, -- ФИО исполнителя
                КодСотрудника AS EmployeeId -- ключ исполнителя для перехода
         FROM dbo.vwРегламентныеРаботы

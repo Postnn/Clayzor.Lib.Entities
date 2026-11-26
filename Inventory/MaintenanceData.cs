@@ -11,7 +11,7 @@ public sealed record MaintenanceWork
 {
     /// <summary>Ключ работы.</summary>
     public int Id { get; init; }
-    /// <summary>Срок в UTC после преобразования из локального времени SQL Server.</summary>
+    /// <summary>Срок в локальной шкале представления SQL Server.</summary>
     public DateTime? Deadline { get; init; }
     /// <summary>Название регламентной работы.</summary>
     public string Name { get; init; } = "";
@@ -19,7 +19,7 @@ public sealed record MaintenanceWork
     public string Responsible { get; init; } = "";
     /// <summary>Адрес инструкции.</summary>
     public string Instruction { get; init; } = "";
-    /// <summary>Последнее выполнение в UTC после преобразования из локального времени SQL Server.</summary>
+    /// <summary>Последнее выполнение в локальной шкале времени GETDATE() триггера.</summary>
     public DateTime? LastCompleted { get; init; }
     /// <summary>Имя сотрудника, выполнившего работу.</summary>
     public string? EmployeeName { get; init; }
