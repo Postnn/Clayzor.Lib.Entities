@@ -12,6 +12,10 @@ public sealed record TerritorialEntityAccess
 {
     /// <summary>Разрешено изменять реквизиты территории.</summary>
     public bool TerritoryUpdate { get; init; }
+    /// <summary>Разрешено создавать территорию.</summary>
+    public bool TerritoryInsert { get; init; }
+    /// <summary>Разрешено вызвать штатную процедуру удаления территории.</summary>
+    public bool TerritoryDelete { get; init; }
     /// <summary>Разрешено создавать телефонный код.</summary>
     public bool PhoneInsert { get; init; }
     /// <summary>Разрешено изменять реквизиты телефонного кода.</summary>
@@ -233,6 +237,65 @@ public static class TerritorialEntityData
             if (saved is null || saved with { ChangedBy = draft.ChangedBy, ChangedByName = draft.ChangedByName, ChangedAt = draft.ChangedAt } != draft)
                 throw new TerritorialEntityRuleException("База не подтвердила сохранение всех реквизитов территории.");
             return saved;
+        }, ct);
+    }
+
+    /// <summary>Создаёт территорию штатным INSERT и принимает только возвращённый и проверенный SQL ключ.</summary>
+    public static async Task<TerritorialEntityRecord> CreateTerritoryAsync(DbManager db, string? principal,
+        TerritorialEntityRecord draft, CancellationToken ct = default)
+    {
+        if (draft.Id != 0 || draft.ParentId is <= 0)
+            throw new TerritorialEntityRuleException("Некорректный ключ новой территории или родителя.");
+        CheckValidation(TerritorialEntityRules.Validate(draft));
+        if (!(await ReadAccessAsync(db, principal, ct)).TerritoryInsert) throw Denied();
+
+        return await WriteAsync(db, async (connection, transaction) =>
+        {
+            if (draft.ParentId is { } parent && await connection.ExecuteScalarAsync<int?>(new CommandDefinition(
+                    TerritorialEntitySql.ReadMoveNode, new { Id = parent }, transaction, cancellationToken: ct)) != parent)
+                throw new TerritorialEntityRuleException("Родительская территория больше недоступна.");
+
+            var id = await connection.ExecuteScalarAsync<int?>(new CommandDefinition(TerritorialEntitySql.TerritoryInsert, new
+            {
+                draft.ParentId, Type = (int)draft.Type, Name = Ansi(draft.Name, 80), AlternateName = Ansi(draft.AlternateName, 80),
+                Caption = Ansi(draft.Caption, 50), AlternateCaption = Ansi(draft.AlternateCaption, 50),
+                Abbreviation = Ansi(draft.Abbreviation, 4), draft.CountryClassification,
+                CountryCode = Ansi(draft.CountryCode, 20), Direction = Ansi(draft.Direction, 300),
+            }, transaction, cancellationToken: ct));
+            if (id is not > 0)
+                throw new TerritorialEntityRuleException("SQL не вернул ключ новой территории. Создание отменено.");
+
+            var saved = await ReadSingleAsync<TerritorialEntityRecord>(connection, transaction,
+                string.Format(TerritorialEntitySql.TerritoryRead, ""), new { Id = id.Value }, ct);
+            if (saved is null || saved with { ChangedBy = draft.ChangedBy, ChangedByName = draft.ChangedByName, ChangedAt = draft.ChangedAt }
+                != draft with { Id = id.Value })
+                throw new TerritorialEntityRuleException("База не подтвердила создание территории с указанными реквизитами.");
+            return saved;
+        }, ct);
+    }
+
+    /// <summary>Удаляет проверенный исходный снимок штатной процедурой без замещающей территории.</summary>
+    public static async Task DeleteTerritoryAsync(DbManager db, string? principal,
+        TerritorialEntityRecord original, CancellationToken ct = default)
+    {
+        if (original.Id <= 0) throw new TerritorialEntityRuleException("Некорректный ключ территории.");
+        if (!(await ReadAccessAsync(db, principal, ct)).TerritoryDelete) throw Denied();
+
+        await WriteAsync(db, async (connection, transaction) =>
+        {
+            var key = new { original.Id };
+            var read = string.Format(TerritorialEntitySql.TerritoryRead, RowLock);
+            if (await ReadSingleAsync<TerritorialEntityRecord>(connection, transaction, read, key, ct) != original)
+                throw Changed();
+            await connection.ExecuteAsync(new CommandDefinition(TerritorialEntitySql.TerritoryDelete, new
+            {
+                КодТерриторииУдаляемой = original.Id,
+                КодТерриторииЗамещающей = 0,
+                Выполнить = 1,
+            }, transaction, commandType: CommandType.StoredProcedure, cancellationToken: ct));
+            if (await ReadSingleAsync<TerritorialEntityRecord>(connection, transaction, read, key, ct) is not null)
+                throw new TerritorialEntityRuleException("База не подтвердила удаление территории.");
+            return true;
         }, ct);
     }
 

@@ -31,6 +31,8 @@ internal static class TerritorialEntitySql
 
     internal const string Access = """
         SELECT CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.Территории','OBJECT','UPDATE'),0)) AS TerritoryUpdate,
+            CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.Территории','OBJECT','INSERT'),0)) AS TerritoryInsert,
+            CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.sp_Delete_Территория','OBJECT','EXECUTE'),0)) AS TerritoryDelete,
             CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.ТелефонныеКоды','OBJECT','INSERT'),0)) AS PhoneInsert,
             CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.ТелефонныеКоды','OBJECT','UPDATE'),0)) AS PhoneUpdate,
             CONVERT(bit,ISNULL(HAS_PERMS_BY_NAME(N'dbo.ТелефонныеКоды','OBJECT','DELETE'),0)) AS PhoneDelete;
@@ -65,6 +67,16 @@ internal static class TerritorialEntitySql
     internal const string PhoneTypeCheck = """
         SELECT COUNT(*) FROM dbo.ТипыТелефоннойСвязи WITH (HOLDLOCK) WHERE КодТипаТелефоннойСвязи=@TypeId;
         """;
+
+    // Legacy INSERT returns the key from the database result, including any result produced by its triggers.
+    internal const string TerritoryInsert = """
+        INSERT dbo.Территории (КодТТерритории, Территория, Caption, Территория1, Caption1,
+            Аббревиатура, КодОКСМ, ТелКодСтраны, Направление, Parent)
+        VALUES (@Type, @Name, @Caption, @AlternateName, @AlternateCaption, @Abbreviation,
+            @CountryClassification, @CountryCode, @Direction, @ParentId);
+        """;
+
+    internal const string TerritoryDelete = "master.dbo.sp_Delete_Территория";
 
     internal const string TerritoryUpdate = """
         UPDATE dbo.Территории SET КодТТерритории=@Type, Территория=@Name, Территория1=@AlternateName,
