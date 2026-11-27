@@ -62,7 +62,7 @@ public sealed class EquipmentLocationPeriod
     }
 
     internal Task<int> UpdateEnlistedAsync(DbConnection connection, DbTransaction transaction, DateTime fromUtc, CancellationToken ct) =>
-        EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, SQLQueries.UPDATE_ОборудованиеРасположениеEnlisted,
+        EquipmentPeriodWrite.ExecuteAsync(connection, transaction, SQLQueries.UPDATE_ОборудованиеРасположениеEnlisted,
             UpdateParameters(fromUtc), EquipmentId, ct);
 
     private object UpdateParameters(DateTime fromUtc) => new

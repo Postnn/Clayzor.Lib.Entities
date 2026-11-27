@@ -15,34 +15,6 @@ internal static class EquipmentPhoneSaveBuilder
         IReadOnlyCollection<EquipmentPhoneLink> original, IReadOnlyCollection<EquipmentPhoneLink> current) =>
         Build(equipment, original, current, enlisted: true);
 
-    internal static IEnumerable<int> ChangedPhoneIds(int equipmentId, IReadOnlyCollection<EquipmentPhoneLink> original,
-        IReadOnlyCollection<EquipmentPhoneLink> current)
-    {
-        ValidateDiff(equipmentId, original, current);
-        var before = original.ToDictionary(item => item.PhoneId);
-        var after = current.ToDictionary(item => item.PhoneId);
-        return before.Keys.Union(after.Keys)
-            .Where(id => !before.TryGetValue(id, out var source) || !after.TryGetValue(id, out var target) || HasChanges(source, target));
-    }
-
-    internal static EquipmentAtsSaveCandidate[] AtsCandidates(int equipmentId, IReadOnlyCollection<EquipmentPhoneLink> original,
-        IReadOnlyCollection<EquipmentPhoneLink> current)
-    {
-        ValidateDiff(equipmentId, original, current);
-        var before = original.ToDictionary(item => item.PhoneId);
-        var after = current.ToDictionary(item => item.PhoneId);
-        var phones = before.Keys.Union(after.Keys)
-            .Where(id => !before.TryGetValue(id, out var source) || !after.TryGetValue(id, out var target) || HasAtsChanges(source, target))
-            .Order().ToArray();
-        if (phones.Length == 0) return [];
-
-        var affected = phones.ToHashSet();
-        var ccm = original.Concat(current).Where(link => affected.Contains(link.PhoneId) && link.ConnectionEquipmentId is > 0)
-            .Select(link => link.ConnectionEquipmentId!.Value).Distinct().Order().DefaultIfEmpty(equipmentId);
-        return phones.Select(id => new EquipmentAtsSaveCandidate(EquipmentAtsSaveCandidate.Phone, id, !after.ContainsKey(id)))
-            .Concat(ccm.Select(id => new EquipmentAtsSaveCandidate(EquipmentAtsSaveCandidate.Ccm, id, false))).ToArray();
-    }
-
     internal static bool HasAtsChanges(EquipmentPhoneLink source, EquipmentPhoneLink target) =>
         source.ConnectionEquipmentId != target.ConnectionEquipmentId || source.AutoDialNumber != target.AutoDialNumber ||
         source.AutoDialDelay != target.AutoDialDelay || source.IsDefault != target.IsDefault;
