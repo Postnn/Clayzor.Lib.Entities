@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -103,40 +105,11 @@ public sealed class EquipmentAccounting
         ApplyMaterialRules();
         if (Id == 0)
         {
-            await db.ExecuteAsync(SQLQueries.INSERT_ОборудованиеБухУчета, new
-            {
-                КодОборудованияБухУчета = Id,
-                КодОборудования = EquipmentId,
-                КодЛица = OwnerId,
-                Материал = IsMaterial,
-                КодЛицаАрендатора = TenantId,
-                ИнвентарныйНомер = InventoryNumber ?? string.Empty,
-                От = DateFrom?.Date,
-                КодДокументаПоступления = ReceiptDocumentId,
-                До = DateTo?.Date,
-                КодДокументаСписания = WriteOffDocumentId,
-                Примечания = Notes ?? string.Empty,
-            }, commandType: CommandType.Text);
+            await db.ExecuteAsync(SQLQueries.INSERT_ОборудованиеБухУчета, WriteParameters(), commandType: CommandType.Text);
             return;
         }
 
-        var status = await db.ExecuteWriteScalarAsync<int?>(SQLQueries.UPDATE_ID_ОборудованиеБухУчета, new
-        {
-            КодОборудованияБухУчета = Id,
-            КодОборудования = EquipmentId,
-            КодЛица = OwnerId,
-            Материал = IsMaterial,
-            КодЛицаАрендатора = TenantId,
-            ИнвентарныйНомер = InventoryNumber ?? string.Empty,
-            От = DateFrom?.Date,
-            КодДокументаПоступления = ReceiptDocumentId,
-            До = DateTo?.Date,
-            КодДокументаСписания = WriteOffDocumentId,
-            Примечания = Notes ?? string.Empty,
-            ExpectedChangedAt = ChangedAt,
-            RoleIdPrimary = (int)Роли.Бухгалтер,
-            RoleIdSecondary = (int)Роли.Главный_бухгалтер_1С,
-        });
+        var status = await db.ExecuteWriteScalarAsync<int?>(SQLQueries.UPDATE_ID_ОборудованиеБухУчета, WriteParameters());
         if (status == 0)
             return;
         if (status == 1)
@@ -151,13 +124,8 @@ public sealed class EquipmentAccounting
     /// <summary>Атомарно удаляет подтверждённую запись, если она всё ещё последняя и доступна текущему пользователю.</summary>
     public static async Task DeleteLatestAsync(DbManager db, int equipmentId, int accountingId)
     {
-        var status = await db.ExecuteWriteScalarAsync<int?>(SQLQueries.DELETE_КодОборудования_ОборудованиеБухУчета, new
-        {
-            КодОборудования = equipmentId,
-            КодОборудованияБухУчета = accountingId,
-            RoleIdPrimary = 66,
-            RoleIdSecondary = 68,
-        });
+        var status = await db.ExecuteWriteScalarAsync<int?>(SQLQueries.DELETE_КодОборудования_ОборудованиеБухУчета,
+            DeleteParameters(equipmentId, accountingId));
         if (status == 0)
             return;
         if (status == 1)
@@ -168,4 +136,89 @@ public sealed class EquipmentAccounting
             throw new UnauthorizedAccessException("Недостаточно прав для удаления бухгалтерского учёта.");
         throw new InvalidOperationException("Не получен корректный результат удаления бухгалтерского учёта. Обновите данные и проверьте состояние записи.");
     }
+
+    internal async Task<EquipmentAccountingWriteProof> SaveEnlistedAsync(DbConnection connection,
+        DbTransaction transaction, CancellationToken ct)
+    {
+        ApplyMaterialRules();
+        var sql = Id == 0 ? SQLQueries.INSERT_ОборудованиеБухУчетаEnlisted : SQLQueries.UPDATE_ID_ОборудованиеБухУчетаEnlisted;
+        var proof = await connection.QuerySingleOrDefaultAsync<EquipmentAccountingWriteProof>(new CommandDefinition(
+            sql, WriteParameters(), transaction, commandType: CommandType.Text, cancellationToken: ct));
+        var rejection = proof?.Status switch
+        {
+            1 => "Запись бухгалтерского учёта изменилась или перенесена в другое оборудование. Обновите данные.",
+            2 or 3 => "Недостаточно прав для изменения бухгалтерского учёта по фактическому или новому владельцу.",
+            4 => "Документ бухгалтерского учёта недоступен текущему пользователю.",
+            5 => "База не подтвердила сохранение бухгалтерского учёта. Обновите данные.",
+            _ => null,
+        };
+        if (rejection is not null)
+            throw new EquipmentAccountingWriteRejectedException(rejection);
+        if (proof is not { Status: 0, ConfirmedAccountingId: > 0, EffectiveOwnerId: > 0 } ||
+            proof.EffectiveOwnerId != OwnerId || Id == 0 && proof.OriginalOwnerId is not null ||
+            Id > 0 && (proof.ConfirmedAccountingId != Id || proof.OriginalOwnerId is not > 0))
+            throw new InvalidOperationException("База не подтвердила точную запись и владельца бухгалтерского учёта.");
+        return proof;
+    }
+
+    internal static async Task<EquipmentAccountingWriteProof> DeleteLatestEnlistedAsync(DbConnection connection,
+        DbTransaction transaction, int equipmentId, int accountingId, CancellationToken ct)
+    {
+        var proof = await connection.QuerySingleOrDefaultAsync<EquipmentAccountingWriteProof>(new CommandDefinition(
+            SQLQueries.DELETE_КодОборудования_ОборудованиеБухУчетаEnlisted, DeleteParameters(equipmentId, accountingId),
+            transaction, commandType: CommandType.Text, cancellationToken: ct));
+        var rejection = proof?.Status switch
+        {
+            1 => "Запись бухгалтерского учёта уже удалена. Обновите данные.",
+            2 => "История бухгалтерского учёта изменилась. Обновите данные перед удалением.",
+            3 => "Недостаточно прав для удаления бухгалтерского учёта.",
+            5 => "База не подтвердила удаление бухгалтерского учёта. Обновите данные.",
+            _ => null,
+        };
+        if (rejection is not null)
+            throw new EquipmentAccountingWriteRejectedException(rejection);
+        if (proof is not { Status: 0, OriginalOwnerId: > 0, EffectiveOwnerId: null } || proof.ConfirmedAccountingId != accountingId)
+            throw new InvalidOperationException("База не подтвердила точную удалённую запись бухгалтерского учёта.");
+        return proof;
+    }
+
+    private object WriteParameters() => new
+    {
+        КодОборудованияБухУчета = Id,
+        КодОборудования = EquipmentId,
+        КодЛица = OwnerId,
+        Материал = IsMaterial,
+        КодЛицаАрендатора = TenantId,
+        ИнвентарныйНомер = InventoryNumber ?? string.Empty,
+        От = DateFrom?.Date,
+        КодДокументаПоступления = ReceiptDocumentId,
+        До = DateTo?.Date,
+        КодДокументаСписания = WriteOffDocumentId,
+        Примечания = Notes ?? string.Empty,
+        ExpectedChangedAt = ChangedAt,
+        RoleIdPrimary = (int)Роли.Бухгалтер,
+        RoleIdSecondary = (int)Роли.Главный_бухгалтер_1С,
+    };
+
+    private static object DeleteParameters(int equipmentId, int accountingId) => new
+    {
+        КодОборудования = equipmentId,
+        КодОборудованияБухУчета = accountingId,
+        RoleIdPrimary = (int)Роли.Бухгалтер,
+        RoleIdSecondary = (int)Роли.Главный_бухгалтер_1С,
+    };
 }
+
+internal sealed class EquipmentAccountingWriteProof
+{
+    /// <summary>Именованный статус SQL, полученный в транзакции записи.</summary>
+    public int? Status { get; set; }
+    /// <summary>Подтверждённый идентификатор изменённой записи.</summary>
+    public int? ConfirmedAccountingId { get; set; }
+    /// <summary>Владелец записи до изменения, когда запись существовала.</summary>
+    public int? OriginalOwnerId { get; set; }
+    /// <summary>Владелец записи после создания или изменения.</summary>
+    public int? EffectiveOwnerId { get; set; }
+}
+
+internal sealed class EquipmentAccountingWriteRejectedException(string message) : InvalidOperationException(message);

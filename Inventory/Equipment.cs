@@ -1,11 +1,16 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using System.Data.SqlTypes;
 using System.Text.RegularExpressions;
 using Clayzor.Lib.DALC;
 using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
+
+/// <summary>Создание отклонено до отправки процедуры или после подтверждённого отката.</summary>
+public sealed class EquipmentCreationRejectedException(string message, Exception? inner = null)
+    : InvalidOperationException(message, inner);
 
 /// <summary>Оборудование: создание через хранимую процедуру и редактирование основных полей.</summary>
 [Table("Оборудование")]
@@ -161,12 +166,118 @@ public sealed class Equipment
         CancellationToken cancellationToken, Func<Equipment, CancellationToken, Task>? beforeDispatch)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var actor = await Employee.GetCurrentWithRolesAsync(db, windowsPrincipal, cancellationToken);
+        var actor = RequireCreationActor(await Employee.GetCurrentWithRolesAsync(db, windowsPrincipal, cancellationToken),
+            expectedEmployeeId);
+        ValidateInsertInput();
+        await ValidateInsertBeforeDispatchAsync(db, actor, cancellationToken);
+        var parameters = CreateInsertParameters();
+        if (beforeDispatch is not null)
+            await beforeDispatch(this, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        await db.ExecuteAsync(SQLQueries.SP_Оборудование_Ins, parameters);
+        return ReadInsertedEquipmentId(parameters);
+    }
+
+    /// <summary>Создаёт оборудование и подтверждает выданный процедурой идентификатор в той же транзакции.</summary>
+    public async Task<int> InsertJournaledAsync(DbManager db, string? windowsPrincipal, int expectedEmployeeId, Guid attemptId,
+        CancellationToken ct, Func<Equipment, CancellationToken, Task>? beforeDispatch = null)
+    {
+        ct.ThrowIfCancellationRequested();
+        var request = (Equipment)MemberwiseClone();
+        var actor = RequireCreationActor(await Employee.GetCurrentWithRolesAsync(db, windowsPrincipal, ct), expectedEmployeeId);
+        var attempt = CreationAttempt(actor, attemptId);
+        if (await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct) is { } previous)
+            return Id = RequireCreationReceipt(previous);
+
+        request.ValidateInsertInput();
+        await request.ValidateInsertBeforeDispatchAsync(db, actor, ct);
+        var parameters = request.CreateInsertParameters();
+        if (beforeDispatch is not null)
+            await beforeDispatch(request, ct);
+        ct.ThrowIfCancellationRequested();
+        var receipt = await InventoryOperationJournal.RunSqlAsync<EquipmentCreationRejectedException>(
+            db, attempt, async (connection, transaction, token) =>
+            {
+                try
+                {
+                    var current = RequireCreationActor(
+                        await Employee.GetCurrentWithRolesAsync(connection, transaction, windowsPrincipal, token), expectedEmployeeId);
+                    await request.ValidateInsertReferencesAsync(connection, transaction, current, token);
+                }
+                catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException)
+                {
+                    throw new EquipmentCreationRejectedException(error.Message, error);
+                }
+
+                token.ThrowIfCancellationRequested();
+                await connection.ExecuteAsync(new CommandDefinition(SQLQueries.SP_Оборудование_Ins, parameters,
+                    transaction, commandType: CommandType.StoredProcedure, cancellationToken: token));
+                return ReadInsertedEquipmentId(parameters);
+            }, ct);
+        return Id = RequireCreationReceipt(receipt);
+    }
+
+    /// <summary>После проверки сотрудника читает наличие открытой попытки создания оборудования.</summary>
+    public static async Task<bool> ReadCreationPendingAsync(DbManager db, string? principal, int employeeId, CancellationToken ct)
+    {
+        RequireCreationActor(await Employee.GetCurrentWithRolesAsync(db, principal, ct), employeeId);
+        return await InventoryOperationJournal.IsScopePendingAsync(db, CreationConflictKey, ct);
+    }
+
+    /// <summary>Читает последний серверный исход собственного создания оборудования.</summary>
+    public static async Task<InventoryOperationReceipt?> ReadLatestCreationReceiptAsync(DbManager db, string? principal,
+        int employeeId, CancellationToken ct)
+    {
+        var actor = RequireCreationActor(await Employee.GetCurrentWithRolesAsync(db, principal, ct), employeeId);
+        return await InventoryOperationJournal.ReadLatestAsync(db, actor, CreationConflictKey, CreationKind, ct);
+    }
+
+    /// <summary>Читает подтверждение точной попытки создания для её текущего владельца.</summary>
+    public static async Task<InventoryOperationReceipt?> ReadCreationReceiptAsync(DbManager db, string? principal,
+        int employeeId, Guid attemptId, CancellationToken ct)
+    {
+        var actor = RequireCreationActor(await Employee.GetCurrentWithRolesAsync(db, principal, ct), employeeId);
+        return await InventoryOperationJournal.ReadAttemptAsync(db, CreationAttempt(actor, attemptId), ct);
+    }
+
+    /// <summary>Учитывает старые неподтверждённые попытки создания под единым серверным ключом.</summary>
+    public static async Task ImportLegacyCreationOperationsAsync(DbManager db, string? principal, int employeeId,
+        IReadOnlyCollection<Guid> attempts, CancellationToken ct)
+    {
+        if (attempts.Count == 0) return;
+        var actor = RequireCreationActor(await Employee.GetCurrentWithRolesAsync(db, principal, ct), employeeId);
+        await InventoryOperationJournal.ImportLegacyAsync(db, attempts.Distinct().Order()
+            .Select(attemptId => CreationAttempt(actor, attemptId)).ToArray(), ct);
+    }
+
+    private const string CreationConflictKey = "equipment/new";
+    private const string CreationKind = "equipment.create";
+
+    private static InventoryOperationJournal.Attempt CreationAttempt(Employee actor, Guid id) =>
+        InventoryOperationJournal.ForEmployee(actor, id, CreationConflictKey, CreationKind);
+
+    private static int RequireCreationReceipt(InventoryOperationReceipt receipt)
+    {
+        if (receipt.State == InventoryOperationState.Rejected)
+            throw new EquipmentCreationRejectedException("Эта попытка создания уже отклонена.");
+        if (receipt.State != InventoryOperationState.Confirmed)
+            throw new InventoryOperationPendingException();
+        if (receipt.ResultEntityId is { } id && id > 0)
+            return id;
+        throw new InvalidOperationException("Сервер не подтвердил идентификатор созданного оборудования.");
+    }
+
+    private static Employee RequireCreationActor(Employee? actor, int expectedEmployeeId)
+    {
         if (expectedEmployeeId <= 0 || actor is null || actor.Id != expectedEmployeeId)
             throw new UnauthorizedAccessException("Не удалось подтвердить текущего сотрудника для создания оборудования.");
         if (!actor.HasRole(Роли.Специалист_по_инвентаризации_оборудования))
             throw new UnauthorizedAccessException("Нет права на создание оборудования.");
+        return actor;
+    }
 
+    private void ValidateInsertInput()
+    {
         if (ReceivedAtUtc < SqlDateTime.MinValue.Value || ReceivedAtUtc > SqlDateTime.MaxValue.Value)
             throw new InvalidOperationException("Укажите допустимую дату и время поступления.");
         if (EquipmentTypeId is not > 0 || ModelId is not > 0 || OwnerId is not > 0 || LocationId is not > 0)
@@ -175,33 +286,48 @@ public sealed class Equipment
             throw new InvalidOperationException("Для расположения «На руках» укажите ответственного сотрудника.");
         if (!IsValidMacAddress(MacAddress) || !IsValidMacAddress(MacAddress2) || !IsValidMacAddress(MacAddressIlo))
             throw new InvalidOperationException("MAC-адрес должен содержать 12 шестнадцатеричных символов.");
+    }
 
-        var type = (await db.QueryRequiredAsync<EquipmentType>(
-            SQLQueries.SELECT_ТипОборудованияПоИдентификатору, new { Id = EquipmentTypeId }, cancellationToken)).SingleOrDefault();
-        var model = (await db.QueryRequiredAsync<EquipmentModel>(
-            SQLQueries.SELECT_МодельОборудованияДляРедактирования, new { Id = ModelId }, cancellationToken)).SingleOrDefault();
+    private Task ValidateInsertBeforeDispatchAsync(DbManager db, Employee actor, CancellationToken ct) =>
+        db.RunDbAsync(async connection =>
+        {
+            await ValidateInsertReferencesAsync(connection, null, actor, ct);
+            return true;
+        });
+
+    private async Task ValidateInsertReferencesAsync(DbConnection connection, DbTransaction? transaction,
+        Employee actor, CancellationToken ct)
+    {
+        var type = await connection.QuerySingleOrDefaultAsync<EquipmentType>(new CommandDefinition(
+            SQLQueries.SELECT_ТипОборудованияПоИдентификатору, new { Id = EquipmentTypeId }, transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
+        var model = await connection.QuerySingleOrDefaultAsync<EquipmentModel>(new CommandDefinition(
+            SQLQueries.SELECT_МодельОборудованияДляРедактирования, new { Id = ModelId }, transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
         if (type is null || model is null || model.EquipmentTypeId != type.Id)
             throw new InvalidOperationException("Модель или тип оборудования недоступны либо не соответствуют друг другу.");
         if (type.IsSerialNumberRequired > 0 && string.IsNullOrWhiteSpace(SerialNumber))
             throw new InvalidOperationException("Укажите серийный номер.");
-        if (IsAccounting && !await CanUseAccountingAsync(db, actor, OwnerId, cancellationToken))
+        if (IsAccounting && (!HasAccountingRole(actor, OwnerId) ||
+            await connection.QuerySingleOrDefaultAsync<int>(new CommandDefinition(
+                SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет, new { PersonId = OwnerId }, transaction,
+                commandType: CommandType.Text, cancellationToken: ct)) != 1))
             throw new UnauthorizedAccessException("Бухгалтерский учёт недоступен для выбранного владельца.");
         if (TenantId is { } tenantId)
         {
             var tenant = tenantId > 0
-                ? (await db.QueryRequiredAsync<PersonLookup>(SQLQueries.SELECT_ТелефонЗаказчикПоИдентификатору,
-                    new { Id = tenantId }, cancellationToken)).SingleOrDefault()
+                ? await connection.QuerySingleOrDefaultAsync<PersonLookup>(new CommandDefinition(
+                    SQLQueries.SELECT_ТелефонЗаказчикПоИдентификатору, new { Id = tenantId }, transaction,
+                    commandType: CommandType.Text, cancellationToken: ct))
                 : null;
             if (tenant?.Id != tenantId)
                 throw new InvalidOperationException("Выберите действующего арендатора из списка заказчиков.");
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        var parameters = CreateInsertParameters();
-        if (beforeDispatch is not null)
-            await beforeDispatch(this, cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        await db.ExecuteAsync(SQLQueries.SP_Оборудование_Ins, parameters);
+    }
+
+    private static int ReadInsertedEquipmentId(DynamicParameters parameters)
+    {
         var id = parameters.Get<int>("@КодОборудования");
         if (id <= 0)
             throw new InvalidOperationException("Хранимая процедура не вернула идентификатор созданного оборудования.");
@@ -212,15 +338,18 @@ public sealed class Equipment
     public static async Task<bool> CanUseAccountingAsync(DbManager db, Employee? actor, int? personId,
         CancellationToken cancellationToken = default)
     {
-        if (personId is not > 0 || actor is null ||
-            !(actor.HasRole(Роли.Бухгалтер, EmployeeRoleScope.PersonOrGlobal, personId) ||
-              actor.HasRole(Роли.Главный_бухгалтер_1С, EmployeeRoleScope.PersonOrGlobal, personId)))
+        if (!HasAccountingRole(actor, personId))
             return false;
 
         var flags = await db.QueryRequiredAsync<int>(SQLQueries.SELECT_ЛицоВедетБухгалтерскийУчет,
             new { PersonId = personId.Value }, cancellationToken);
         return flags.SingleOrDefault() == 1;
     }
+
+    private static bool HasAccountingRole(Employee? actor, int? personId) =>
+        personId is > 0 && actor is not null &&
+        (actor.HasRole(Роли.Бухгалтер, EmployeeRoleScope.PersonOrGlobal, personId) ||
+         actor.HasRole(Роли.Главный_бухгалтер_1С, EmployeeRoleScope.PersonOrGlobal, personId));
 
     /// <summary>Обновляет основные поля существующего оборудования по подтверждённому legacy-контракту.</summary>
     public async Task UpdateAsync(DbManager db)

@@ -7,7 +7,8 @@ namespace Clayzor.Lib.Entities.Inventory;
 internal static class EquipmentSimSaveBuilder
 {
     internal static EquipmentPhoneSaveCommand BuildSave(
-        EquipmentSimCard sim, EquipmentSimWriteMode mode, EquipmentSimCard? original, int? duplicateEquipmentId)
+        EquipmentSimCard sim, EquipmentSimWriteMode mode, EquipmentSimCard? original, int? duplicateEquipmentId,
+        bool enlisted = false)
     {
         if ((mode == EquipmentSimWriteMode.Add && original is not null) ||
             (mode == EquipmentSimWriteMode.Edit && original?.EquipmentId != sim.EquipmentId))
@@ -33,7 +34,7 @@ internal static class EquipmentSimSaveBuilder
         if (mode == EquipmentSimWriteMode.Add)
         {
             sql.AppendLine(SQLQueries.SELECT_SIMКарты_ОжидаетсяОтсутствие);
-            sql.AppendLine("    BEGIN ROLLBACK TRANSACTION; SELECT 0; RETURN; END;");
+            sql.AppendLine(Reject(0, enlisted));
         }
         if (duplicateEquipmentId is not null)
         {
@@ -42,7 +43,7 @@ internal static class EquipmentSimSaveBuilder
             sql.AppendLine("      AND EXISTS (SELECT 1 FROM vwSIMКарты");
             sql.AppendLine("                  WHERE КодОборудования = @ДубликатОборудования AND НомерТелефона = @НомерТелефона);");
             sql.AppendLine("    IF @@ROWCOUNT <> 1");
-            sql.AppendLine("    BEGIN ROLLBACK TRANSACTION; SELECT -1; RETURN; END;");
+            sql.AppendLine(Reject(-1, enlisted));
             sql.AppendLine("    SET @КодЛицаПерсональныхДанных = COALESCE(@КодЛицаПерсональныхДанных,");
             sql.AppendLine("        (SELECT КодЛицаПерсональныхДанных FROM vwSIMКарты WHERE КодОборудования = @ДубликатОборудования));");
         }
@@ -50,17 +51,25 @@ internal static class EquipmentSimSaveBuilder
             sql.AppendLine(SQLQueries.INSERT_SIMКарты);
         else
             sql.Append(SQLQueries.UPDATE_SIMКарты).AppendLine(SQLQueries.WHERE_SIMКарты_ИсходноеСостояние);
-        return InTransaction(sql, parameters);
+        return Finish(sql, parameters, enlisted);
     }
 
-    internal static EquipmentPhoneSaveCommand BuildDelete(EquipmentSimCard original)
+    internal static EquipmentPhoneSaveCommand BuildDelete(EquipmentSimCard original, bool enlisted = false)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@EquipmentId", original.EquipmentId, DbType.Int32);
         AddOriginal(parameters, original);
         var sql = new StringBuilder(SQLQueries.DELETE_ID_SIMКарты).AppendLine(SQLQueries.WHERE_SIMКарты_ИсходноеСостояние);
-        return InTransaction(sql, parameters);
+        return Finish(sql, parameters, enlisted);
     }
+
+    private static string Reject(int status, bool enlisted) => enlisted
+        ? $"    BEGIN SELECT {status}; RETURN; END;"
+        : $"    BEGIN ROLLBACK TRANSACTION; SELECT {status}; RETURN; END;";
+
+    private static EquipmentPhoneSaveCommand Finish(StringBuilder write, DynamicParameters parameters, bool enlisted) => enlisted
+        ? new($"SET NOCOUNT ON;\n{write}\nIF @@ROWCOUNT <> 1\n{Reject(0, true)}\nSELECT 1;", parameters)
+        : InTransaction(write, parameters);
 
     private static void AddOriginal(DynamicParameters parameters, EquipmentSimCard original)
     {

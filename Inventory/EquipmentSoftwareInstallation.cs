@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -79,21 +81,45 @@ public sealed class EquipmentSoftwareInstallation
     public async Task SaveAsync(DbManager db)
     {
         var sql = Id == 0 ? SQLQueries.INSERT_ОборудованиеПО : SQLQueries.UPDATE_ID_ОборудованиеПО;
-        var affectedRows = await db.ExecuteAsync(sql, new
-        {
-            КодОборудованияПО = Id,
-            КодОборудования = EquipmentId,
-            ИсходныйКодОборудования = EquipmentId,
-            ИсходноеИзменено = ChangedAt,
-            КодПО = SoftwareId,
-            От = InstalledAt?.Date,
-            До = UninstalledAt?.Date,
-            Установлено = Installed,
-            Дистрибутив = Distribution,
-            Примечания = Notes ?? string.Empty,
-        }, commandType: CommandType.Text);
+        var affectedRows = await db.ExecuteAsync(sql, WriteParameters(), commandType: CommandType.Text);
         if (affectedRows != 1)
             throw new InvalidOperationException(
                 "Установка ПО была изменена или удалена другим пользователем. Обновите данные и повторите операцию.");
     }
+
+    internal async Task<int> SaveEnlistedAsync(DbConnection connection, DbTransaction transaction, CancellationToken ct)
+    {
+        var sql = Id == 0 ? SQLQueries.INSERT_ОборудованиеПОEnlisted : SQLQueries.UPDATE_ID_ОборудованиеПОEnlisted;
+        var proof = await connection.QuerySingleOrDefaultAsync<SoftwareWriteProof>(new CommandDefinition(sql, WriteParameters(), transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
+        var result = proof?.ConfirmedInstallationId;
+        if (result == 0)
+            throw new EquipmentSoftwareWriteRejectedException(
+                "Состояние установки ПО изменилось или база не подтвердила запись. Обновите данные.");
+        if (result is not > 0 || Id > 0 && result != Id)
+            throw new InvalidOperationException("База не подтвердила точный идентификатор установки ПО.");
+        return result.Value;
+    }
+
+    private sealed class SoftwareWriteProof
+    {
+        /// <summary>Ключ проверенной сохранённой установки или 0 при доказанном отказе.</summary>
+        public int? ConfirmedInstallationId { get; set; }
+    }
+
+    private object WriteParameters() => new
+    {
+        КодОборудованияПО = Id,
+        КодОборудования = EquipmentId,
+        ИсходныйКодОборудования = EquipmentId,
+        ИсходноеИзменено = ChangedAt,
+        КодПО = SoftwareId,
+        От = InstalledAt?.Date,
+        До = UninstalledAt?.Date,
+        Установлено = Installed,
+        Дистрибутив = Distribution,
+        Примечания = Notes ?? string.Empty,
+    };
 }
+
+internal sealed class EquipmentSoftwareWriteRejectedException(string message) : InvalidOperationException(message);

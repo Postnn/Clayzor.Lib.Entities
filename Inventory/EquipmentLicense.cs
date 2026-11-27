@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -100,7 +102,26 @@ public sealed class EquipmentLicense
     }
 
     /// <summary>Добавляет или обновляет лицензию оборудования.</summary>
-    public Task SaveAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_Soft, new
+    public Task SaveAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_Soft, WriteParameters(), commandType: CommandType.Text);
+
+    internal async Task<int> SaveEnlistedAsync(DbConnection connection, DbTransaction transaction, CancellationToken ct)
+    {
+        var proof = await connection.QuerySingleOrDefaultAsync<LicenseWriteProof>(new CommandDefinition(
+            SQLQueries.UPDATE_SoftEnlisted, WriteParameters(), transaction, commandType: CommandType.Text, cancellationToken: ct));
+        if (proof?.ConfirmedEquipmentId == 0)
+            throw new EquipmentLicenseWriteRejectedException("Лицензия изменилась или база не подтвердила запись. Обновите данные.");
+        if (proof?.ConfirmedEquipmentId is not > 0 || proof.ConfirmedEquipmentId != EquipmentId)
+            throw new InvalidOperationException("База не подтвердила точный ключ лицензии оборудования.");
+        return EquipmentId;
+    }
+
+    private sealed class LicenseWriteProof
+    {
+        /// <summary>Подтверждённый код оборудования или 0 при доказанном отказе.</summary>
+        public int? ConfirmedEquipmentId { get; set; }
+    }
+
+    private object WriteParameters() => new
     {
         КодОборудования = EquipmentId,
         ОжидаетсяСуществующий = ExpectedExisting ? 1 : 0,
@@ -113,5 +134,7 @@ public sealed class EquipmentLicense
         ДействуетОт = DateFrom?.Date,
         ДействуетДо = DateTo?.Date.AddDays(1),
         Дистрибутив = Distribution ?? string.Empty,
-    }, commandType: CommandType.Text);
+    };
 }
+
+internal sealed class EquipmentLicenseWriteRejectedException(string message) : InvalidOperationException(message);

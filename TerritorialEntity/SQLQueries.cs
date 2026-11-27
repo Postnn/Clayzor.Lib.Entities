@@ -3,6 +3,37 @@ namespace Clayzor.Lib.Entities.TerritorialEntity;
 // Feature-scoped until the coordinator assigns the shared SQLQueries.cs integration.
 internal static class TerritorialEntitySql
 {
+    internal const string LatestOwnMove = """
+        WITH Attempts AS
+        (
+            SELECT AttemptId, EmployeeId, ConflictKey, CommandKind, State, ResultEntityId,
+                   CreatedUtc, SettledUtc, CAST(0 AS bit) AS Imported
+              FROM dbo.ClayzorOperationJournal
+             WHERE EmployeeId = @EmployeeId AND ConflictKey = @ConflictKey AND CommandKind = @CommandKind
+            UNION ALL
+            SELECT AttemptId, EmployeeId, ConflictKey, CommandKind, @Unknown, NULL,
+                   ImportedUtc, NULL, CAST(1 AS bit)
+              FROM dbo.ClayzorLegacyOperationEvidence
+             WHERE EmployeeId = @EmployeeId AND ConflictKey = @ConflictKey AND CommandKind = @CommandKind
+               AND ResolvedUtc IS NULL
+        ),
+        Latest AS
+        (
+            SELECT TOP (1) AttemptId, EmployeeId, ConflictKey, CommandKind, State, ResultEntityId, Imported
+              FROM Attempts
+             ORDER BY CASE WHEN SettledUtc IS NULL THEN 0 ELSE 1 END, CreatedUtc DESC, AttemptId DESC, Imported DESC
+        )
+        SELECT l.AttemptId, l.EmployeeId, l.ConflictKey, l.CommandKind, l.State, l.ResultEntityId,
+               s.ConflictKey AS RelatedScope
+          FROM Latest l
+         OUTER APPLY
+        (
+            SELECT ConflictKey FROM dbo.ClayzorOperationScope WHERE AttemptId = l.AttemptId AND l.Imported = 0
+            UNION ALL
+            SELECT ConflictKey FROM dbo.ClayzorLegacyOperationScope WHERE AttemptId = l.AttemptId AND l.Imported = 1
+        ) s;
+        """;
+
     internal const string ReadMoveNode = """
         SELECT КодТерритории AS Id, Parent AS ParentId, L AS [Left], R AS [Right]
         FROM dbo.Территории WITH (UPDLOCK,HOLDLOCK) WHERE КодТерритории=@Id;

@@ -39,6 +39,10 @@ public sealed class MaintenanceRejectedException(string message, Exception? inne
 /// <summary>Читает работы и регистрирует выполнение под текущим сотрудником.</summary>
 public static class MaintenanceData
 {
+    /// <summary>Код команды подтверждения выполнения в серверном журнале.</summary>
+    public const string CompletionKind = "maintenance.complete";
+    private const string ConflictPrefix = "maintenance/";
+
     /// <summary>Имена шести колонок, разрешённых для построения параметризованного фильтра.</summary>
     public static IReadOnlyList<string> FilterColumns { get; } = Array.AsReadOnly(new[]
     {
@@ -77,23 +81,24 @@ public static class MaintenanceData
 
     /// <summary>Сопоставляет роли триггера с разрешением INSERT текущего SQL-контекста.</summary>
     public static Task<bool> CanCompleteAsync(DbManager db, Employee actor, CancellationToken ct = default) =>
-        actor.HasRole(Роли.Дежурный_инженер) ||
-        actor.HasRole(Роли.Исполнитель_заявок_службы_поддержки_пользователей) ||
-        actor.HasRole(Роли.Администратор_тарифов_связи)
+        HasCompletingRole(actor)
             ? ReadFlagAsync(db, SQLQueries.SELECT_РегламентныеРаботыРазрешение, null, ct)
             : Task.FromResult(false);
 
-    /// <summary>Повторно проверяет сотрудника, разрешение и работу, затем передаёт БД только ключ.</summary>
-    public static async Task CompleteAsync(DbManager db, string? principal, int? expectedEmployeeId, int id, CancellationToken ct = default)
+    /// <summary>Проверяет сотрудника, разрешение и работу, затем атомарно записывает выполнение и результат попытки.</summary>
+    public static async Task<InventoryOperationReceipt> CompleteAsync(DbManager db, string? principal,
+        int? expectedEmployeeId, int id, Guid attemptId, CancellationToken ct = default)
     {
+        Employee actor;
         try
         {
             if (id <= 0) throw new MaintenanceRejectedException("Некорректный код регламентной работы.");
-            var actor = await Employee.GetCurrentWithRolesAsync(db, principal, ct);
-            if (actor is null || actor.Id != expectedEmployeeId || !await CanCompleteAsync(db, actor, ct))
+            var employee = await Employee.GetCurrentWithRolesAsync(db, principal, ct);
+            if (employee is null || employee.Id != expectedEmployeeId || !await CanCompleteAsync(db, employee, ct))
                 throw new MaintenanceRejectedException("У вас нет права подтверждать выполнение.");
             if (!await ReadFlagAsync(db, SQLQueries.SELECT_РегламентнаяРаботаДоступна, new { id }, ct))
                 throw new MaintenanceRejectedException("Работа удалена, недоступна или ещё не утверждена.");
+            actor = employee;
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception e) when (e is not MaintenanceRejectedException)
@@ -101,18 +106,86 @@ public static class MaintenanceData
             throw new MaintenanceRejectedException("Проверка прав или работы завершилась ошибкой. Команда не отправлена.", e);
         }
 
-        try
-        {
-            await db.RunDbAsync(connection => connection.ExecuteAsync(
-                new CommandDefinition(SQLQueries.INSERT_РегламентныеРаботыВыполнение, new { id },
-                    commandType: CommandType.Text, cancellationToken: ct)));
-        }
-        catch (SqlException e) when (e.Number is 229 or 547 || e.Number == 50000 && e.Class == 12)
-        {
-            // Эти отказы прав, FK и проверок штатного триггера прерывают INSERT.
-            throw new MaintenanceRejectedException("База данных отклонила подтверждение выполнения.", e);
-        }
+        var attempt = InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(id), CompletionKind);
+        var receipt = await InventoryOperationJournal.RunSqlAsync<MaintenanceRejectedException>(db, attempt,
+            async (connection, transaction, token) =>
+            {
+                var current = await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, token);
+                if (current is null || current.Id != actor.Id || !HasCompletingRole(current) ||
+                    !await connection.QuerySingleAsync<bool>(new CommandDefinition(SQLQueries.SELECT_РегламентныеРаботыРазрешение,
+                        transaction: transaction, commandType: CommandType.Text, cancellationToken: token)))
+                    throw new MaintenanceRejectedException("У вас нет права подтверждать выполнение.");
+                if (!await connection.QuerySingleAsync<bool>(new CommandDefinition(
+                        SQLQueries.SELECT_РегламентнаяРаботаДоступна, new { id }, transaction,
+                        commandType: CommandType.Text, cancellationToken: token)))
+                    throw new MaintenanceRejectedException("Работа удалена, недоступна или ещё не утверждена.");
+                try
+                {
+                    await connection.ExecuteAsync(new CommandDefinition(SQLQueries.INSERT_РегламентныеРаботыВыполнение,
+                        new { id }, transaction, commandType: CommandType.Text, cancellationToken: token));
+                }
+                catch (SqlException e) when (e.Number is 229 or 547 || e.Number == 50000 && e.Class == 12)
+                {
+                    throw new MaintenanceRejectedException("База данных отклонила подтверждение выполнения.", e);
+                }
+
+                return id;
+            }, ct);
+        if (receipt.State == InventoryOperationState.Rejected)
+            throw new MaintenanceRejectedException("Эта попытка уже отклонена. Подтвердите выполнение заново.");
+        return receipt;
     }
+
+    /// <summary>Читает ключи работ с незавершёнными попытками после проверки права подтверждения.</summary>
+    public static async Task<HashSet<int>> ReadPendingAsync(DbManager db, CancellationToken ct)
+    {
+        var scopes = await InventoryOperationJournal.ReadOpenScopesAsync(db, CompletionKind, ct);
+        var ids = new HashSet<int>();
+        foreach (var key in scopes)
+        {
+            if (key.StartsWith(ConflictPrefix, StringComparison.Ordinal) &&
+                int.TryParse(key.AsSpan(ConflictPrefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+                ids.Add(id);
+        }
+        return ids;
+    }
+
+    /// <summary>Читает серверный результат по работе для проверенного текущего сотрудника.</summary>
+    public static Task<InventoryOperationReceipt?> ReadReceiptAsync(DbManager db, Employee actor, int id, CancellationToken ct) =>
+        InventoryOperationJournal.ReadLatestAsync(db, actor, ConflictKey(id), ct);
+
+    /// <summary>Сверяет точную попытку по авторитетному журналу.</summary>
+    public static Task<InventoryOperationReceipt?> ReadReceiptAsync(DbManager db, Employee actor, int id, Guid attemptId,
+        CancellationToken ct) => InventoryOperationJournal.ReadAttemptAsync(db,
+        InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(id), CompletionKind), ct);
+
+    /// <summary>Сохраняет старые сведения о попытках как неподтверждённые после свежей проверки прав.</summary>
+    public static async Task ImportLegacyOperationsAsync(DbManager db, string? principal, int expectedEmployee,
+        IReadOnlyCollection<(int WorkId, Guid AttemptId)> evidence, CancellationToken ct)
+    {
+        if (evidence.Count == 0) return;
+
+        var actor = await Employee.GetCurrentWithRolesAsync(db, principal, ct);
+        if (actor is null || actor.Id != expectedEmployee || !await CanCompleteAsync(db, actor, ct))
+            throw new MaintenanceRejectedException("Не удалось подтвердить доступ к журналу регламентных работ.");
+
+        var attempts = new List<InventoryOperationJournal.Attempt>(evidence.Count);
+        foreach (var (workId, attemptId) in evidence.Distinct().OrderBy(item => item.AttemptId))
+        {
+            if (workId <= 0 || attemptId == Guid.Empty)
+                throw new MaintenanceRejectedException("Сведения о прежней попытке требуют проверки.");
+            attempts.Add(InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(workId), CompletionKind));
+        }
+
+        await InventoryOperationJournal.ImportLegacyAsync(db, attempts, ct);
+    }
+
+    private static bool HasCompletingRole(Employee actor) =>
+        actor.HasRole(Роли.Дежурный_инженер) ||
+        actor.HasRole(Роли.Исполнитель_заявок_службы_поддержки_пользователей) ||
+        actor.HasRole(Роли.Администратор_тарифов_связи);
+
+    private static string ConflictKey(int id) => ConflictPrefix + id.ToString(CultureInfo.InvariantCulture);
 
     private static Task<bool> ReadFlagAsync(DbManager db, string query, object? parameters, CancellationToken ct) =>
         db.RunDbAsync(connection => connection.QuerySingleAsync<bool>(

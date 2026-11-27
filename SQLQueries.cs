@@ -6,6 +6,515 @@ namespace Clayzor.Lib.Entities;
 /// </summary>
 public static class SQLQueries
 {
+    /// <summary>Проверяет, что процедура оставила транзакцию записи активной и пригодной для подтверждения.</summary>
+    internal const string SELECT_ActiveJournalTransaction =
+        "SELECT CASE WHEN XACT_STATE() = 1 AND @@TRANCOUNT = 1 THEN 1 ELSE 0 END;";
+
+    /// <summary>Фиксирует точный строковый ключ результата в транзакции бизнес-операции.</summary>
+    internal const string INSERT_ClayzorOperationTextReceipt = """
+        INSERT INTO dbo.ClayzorOperationTextReceipt (AttemptId, ResultKey)
+        VALUES (@AttemptId, @ResultKey);
+        SELECT @@ROWCOUNT; -- Подтверждена строка ключа результата
+        """;
+
+    /// <summary>Читает строковый ключ после отдельной проверки владельца и исхода попытки.</summary>
+    internal const string SELECT_ClayzorOperationTextReceipt = """
+        SELECT ResultKey -- Канонический ключ команды
+          FROM dbo.ClayzorOperationTextReceipt
+         WHERE AttemptId = @AttemptId;
+        """;
+
+    /// <summary>Блокирует идентификатор попытки на время резервирования, включая ещё не существующую запись.</summary>
+    internal const string SELECT_ClayzorOperationJournalAttemptForUpdate = """
+        SELECT AttemptId,       -- Долговечный идентификатор попытки
+               EmployeeId,      -- Сотрудник, определённый сервером
+               ConflictKey,     -- Ключ конфликтующих действий
+               CommandKind,     -- Тип команды
+               State,           -- Состояние исхода
+               ResultEntityId   -- Идентификатор принятого результата
+          FROM dbo.ClayzorOperationJournal WITH (UPDLOCK, HOLDLOCK)
+         WHERE AttemptId = @AttemptId;
+        """;
+
+    /// <summary>Блокирует открытый слот конфликтующих действий независимо от сотрудника.</summary>
+    internal const string SELECT_ClayzorOperationJournalOpenSlotForUpdate = """
+        SELECT CONVERT(bit, CASE WHEN EXISTS
+               (SELECT 1 FROM dbo.ClayzorOperationJournal WITH (UPDLOCK, HOLDLOCK)
+                 WHERE ConflictKey = @ConflictKey AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorOperationScope WITH (UPDLOCK, HOLDLOCK)
+                 WHERE ConflictKey = @ConflictKey AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorTelWorkflow WITH (UPDLOCK, HOLDLOCK)
+                 WHERE (ConflictKey = @ConflictKey OR ResultConflictKey = @ConflictKey)
+                   AND OpenSlot = @OpenSlot AND AttemptId <> @AttemptId)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorEquipmentAtsScope WITH (UPDLOCK, HOLDLOCK)
+                 WHERE ConflictKey = @ConflictKey AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorLegacyOperationEvidence WITH (UPDLOCK, HOLDLOCK)
+                 WHERE ConflictKey = @ConflictKey AND ResolvedUtc IS NULL)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorLegacyOperationScope AS scope WITH (UPDLOCK, HOLDLOCK)
+                  JOIN dbo.ClayzorLegacyOperationEvidence AS evidence WITH (UPDLOCK, HOLDLOCK)
+                    ON evidence.AttemptId = scope.AttemptId
+                 WHERE scope.ConflictKey = @ConflictKey AND evidence.ResolvedUtc IS NULL)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorLegacyOperationEvidence WITH (UPDLOCK, HOLDLOCK)
+                 WHERE AttemptId = @AttemptId)
+               THEN 1 ELSE 0 END); -- Уже существует неразрешённая попытка
+        """;
+
+    /// <summary>Читает наличие блокирующей попытки по точному ключу карточки.</summary>
+    internal const string SELECT_ClayzorOperationJournalOpenSlot = """
+        SELECT CONVERT(bit, CASE WHEN EXISTS
+               (SELECT 1 FROM dbo.ClayzorOperationJournal
+                 WHERE ConflictKey = @ConflictKey AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorOperationScope
+                 WHERE ConflictKey = @ConflictKey AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorTelWorkflow
+                 WHERE (ConflictKey = @ConflictKey OR ResultConflictKey = @ConflictKey)
+                   AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorEquipmentAtsScope
+                 WHERE ConflictKey = @ConflictKey AND OpenSlot = @OpenSlot)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorLegacyOperationEvidence
+                 WHERE ConflictKey = @ConflictKey AND ResolvedUtc IS NULL)
+               OR EXISTS
+               (SELECT 1 FROM dbo.ClayzorLegacyOperationScope AS scope
+                  JOIN dbo.ClayzorLegacyOperationEvidence AS evidence ON evidence.AttemptId = scope.AttemptId
+                 WHERE scope.ConflictKey = @ConflictKey AND evidence.ResolvedUtc IS NULL)
+               THEN 1 ELSE 0 END); -- Наличие блокирующей попытки
+        """;
+
+    /// <summary>Читает связанные конфликтующие области ранее зарегистрированной попытки.</summary>
+    internal const string SELECT_ClayzorOperationScope = """
+        SELECT ConflictKey -- Дополнительная область той же попытки
+          FROM dbo.ClayzorOperationScope
+         WHERE AttemptId = @AttemptId;
+        """;
+
+    /// <summary>Читает или блокирует точный идентификатор плана АТС оборудования.</summary>
+    internal const string SELECT_EquipmentAtsWorkflowForUpdate = """
+        SELECT AttemptId, EmployeeId, EquipmentId, Origin, ExpectedChangedAtUtc, OwnerId, ContextFingerprint, State
+          FROM dbo.ClayzorEquipmentAtsWorkflow WITH (UPDLOCK, HOLDLOCK)
+         WHERE AttemptId = @AttemptId;
+        """;
+
+    /// <summary>Читает открытую собственную настройку сохранённого IP-телефона.</summary>
+    internal const string SELECT_EquipmentAtsActiveConfigure = """
+        SELECT AttemptId, EmployeeId, EquipmentId, Origin, ExpectedChangedAtUtc, OwnerId, ContextFingerprint, State
+          FROM dbo.ClayzorEquipmentAtsWorkflow
+         WHERE EmployeeId = @EmployeeId AND EquipmentId = @EquipmentId AND Origin = 1 AND State = 0;
+        """;
+
+    internal const string SELECT_EquipmentAtsSteps = """
+        SELECT StepIndex, Kind, TargetId, Deleting, State
+          FROM dbo.ClayzorEquipmentAtsStep
+         WHERE AttemptId = @AttemptId
+         ORDER BY StepIndex;
+        """;
+
+    internal const string INSERT_EquipmentAtsWorkflow = """
+        INSERT INTO dbo.ClayzorEquipmentAtsWorkflow
+            (AttemptId, EmployeeId, EquipmentId, Origin, ExpectedChangedAtUtc, OwnerId, ContextFingerprint, State, CreatedUtc)
+        VALUES (@AttemptId, @EmployeeId, @EquipmentId, @Origin, @ExpectedChangedAtUtc, @OwnerId, @ContextFingerprint, 0, SYSUTCDATETIME());
+        SELECT @@ROWCOUNT;
+        """;
+
+    internal const string INSERT_EquipmentAtsScope = """
+        INSERT INTO dbo.ClayzorEquipmentAtsScope (AttemptId, ConflictKey, OpenSlot)
+        VALUES (@AttemptId, @ConflictKey, @OpenSlot);
+        SELECT @@ROWCOUNT;
+        """;
+
+    internal const string INSERT_EquipmentAtsStep = """
+        INSERT INTO dbo.ClayzorEquipmentAtsStep (AttemptId, StepIndex, Kind, TargetId, Deleting, State)
+        VALUES (@AttemptId, @StepIndex, @Kind, @TargetId, @Deleting, 0);
+        SELECT @@ROWCOUNT;
+        """;
+
+    /// <summary>Меняет фазу ранее сохранённой команды с проверкой причины, цели и текущей фазы.</summary>
+    internal const string UPDATE_EquipmentAtsStepState = """
+        UPDATE dbo.ClayzorEquipmentAtsStep
+           SET State = @NextState
+         WHERE AttemptId = @AttemptId AND StepIndex = @StepIndex AND Kind = @Kind
+           AND TargetId = @TargetId AND Deleting = @Deleting AND State = @ExpectedState;
+        SELECT @@ROWCOUNT;
+        """;
+
+    /// <summary>Освобождает области после подтверждения всех шагов в транзакции их последнего результата.</summary>
+    internal const string UPDATE_EquipmentAtsCompleted = """
+        UPDATE dbo.ClayzorEquipmentAtsWorkflow
+           SET State = 1, ClosedUtc = SYSUTCDATETIME()
+         WHERE AttemptId = @AttemptId AND State = 0
+           AND NOT EXISTS (SELECT 1 FROM dbo.ClayzorEquipmentAtsStep WHERE AttemptId = @AttemptId AND State <> 2);
+        DECLARE @Changed int;
+        SET @Changed = @@ROWCOUNT;
+        IF @Changed = 1
+            UPDATE dbo.ClayzorEquipmentAtsScope SET OpenSlot = @AttemptId WHERE AttemptId = @AttemptId;
+        SELECT @Changed;
+        """;
+
+    /// <summary>Закрывает устаревший план только когда факт отсутствия отправленных шагов доказан.</summary>
+    internal const string UPDATE_EquipmentAtsAbandoned = """
+        UPDATE dbo.ClayzorEquipmentAtsWorkflow
+           SET State = 2, ClosedUtc = SYSUTCDATETIME()
+         WHERE AttemptId = @AttemptId AND State = 0
+           AND NOT EXISTS (SELECT 1 FROM dbo.ClayzorEquipmentAtsStep WHERE AttemptId = @AttemptId AND State <> 0);
+        DECLARE @Changed int;
+        SET @Changed = @@ROWCOUNT;
+        IF @Changed = 1
+            UPDATE dbo.ClayzorEquipmentAtsScope SET OpenSlot = @AttemptId WHERE AttemptId = @AttemptId;
+        SELECT @Changed;
+        """;
+
+    /// <summary>Сохраняет кандидатов АТС под тем же идентификатором, что подтверждённая запись связей.</summary>
+    internal const string INSERT_EquipmentAtsSavedWorkflow = """
+        INSERT INTO dbo.ClayzorEquipmentAtsWorkflow
+            (AttemptId, EmployeeId, EquipmentId, Origin, ExpectedChangedAtUtc, OwnerId, ContextFingerprint, State, CreatedUtc, PlanPrepared)
+        VALUES (@AttemptId, @EmployeeId, @EquipmentId, 0, @ExpectedChangedAtUtc, @OwnerId, @ContextFingerprint, 0, SYSUTCDATETIME(), @PlanPrepared);
+        SELECT @@ROWCOUNT;
+        """;
+
+    internal const string INSERT_EquipmentAtsSaveCandidate = """
+        INSERT INTO dbo.ClayzorEquipmentAtsCandidate (AttemptId, Kind, TargetId, Deleting)
+        VALUES (@AttemptId, @Kind, @TargetId, @Deleting);
+        SELECT @@ROWCOUNT;
+        """;
+
+    internal const string SELECT_EquipmentAtsActiveSave = """
+        SELECT AttemptId, EmployeeId, EquipmentId, Origin, ExpectedChangedAtUtc, OwnerId, ContextFingerprint, State
+          FROM dbo.ClayzorEquipmentAtsWorkflow
+         WHERE EmployeeId = @EmployeeId AND EquipmentId = @EquipmentId AND Origin = 0 AND State = 0;
+        """;
+
+    internal const string SELECT_EquipmentAtsSavePlanPrepared = """
+        SELECT PlanPrepared FROM dbo.ClayzorEquipmentAtsWorkflow WHERE AttemptId = @AttemptId AND Origin = 0;
+        """;
+
+    internal const string SELECT_EquipmentAtsSaveCandidates = """
+        SELECT Kind, TargetId, Deleting
+          FROM dbo.ClayzorEquipmentAtsCandidate
+         WHERE AttemptId = @AttemptId
+         ORDER BY Kind, TargetId;
+        """;
+
+    /// <summary>Готовый план и его контрольная сумма фиксируются единожды перед любым dispatch.</summary>
+    internal const string UPDATE_EquipmentAtsSavePlanPrepared = """
+        UPDATE dbo.ClayzorEquipmentAtsWorkflow
+           SET PlanPrepared = 1, ContextFingerprint = @ContextFingerprint
+         WHERE AttemptId = @AttemptId AND Origin = 0 AND State = 0 AND PlanPrepared = 0;
+        SELECT @@ROWCOUNT;
+        """;
+
+    /// <summary>Резервирует связанные области той же транзакцией, в которой регистрируется попытка.</summary>
+    internal const string INSERT_ClayzorOperationScope = """
+        INSERT INTO dbo.ClayzorOperationScope (AttemptId, ConflictKey, OpenSlot)
+        VALUES (@AttemptId, @ConflictKey, @OpenSlot);
+        SELECT @@ROWCOUNT; -- Резерв подтверждён для одной области
+        """;
+
+    /// <summary>Освобождает связанные конфликтующие области после определённого исхода.</summary>
+    internal const string UPDATE_ClayzorOperationScope = """
+        UPDATE dbo.ClayzorOperationScope
+           SET OpenSlot = AttemptId -- Сохранили состав попытки, освободив открытый слот
+         WHERE AttemptId = @AttemptId AND OpenSlot = @OpenSlot;
+        SELECT @@ROWCOUNT; -- Количество освобождённых областей
+        """;
+
+    /// <summary>Резервирует попытку без записи входных значений и секретов.</summary>
+    internal const string INSERT_ClayzorOperationJournalAttempt = """
+        DECLARE @now datetime2(7);
+        SET @now = SYSUTCDATETIME();
+        INSERT INTO dbo.ClayzorOperationJournal
+            (AttemptId, EmployeeId, ConflictKey, CommandKind, State, CreatedUtc, UpdatedUtc, OpenSlot)
+        VALUES
+            (@AttemptId, @EmployeeId, @ConflictKey, @CommandKind, 0, @now, @now, @OpenSlot);
+        """;
+
+    /// <summary>Записывает разрешённый переход той же попытки. Подтверждение SQL выполняется под транзакцией DML.</summary>
+    internal const string UPDATE_ClayzorOperationJournalState = """
+        DECLARE @now datetime2(7);
+        SET @now = SYSUTCDATETIME();
+        UPDATE dbo.ClayzorOperationJournal
+           SET State = @NextState,        -- Новый доказанный этап или исход
+               UpdatedUtc = @now,        -- Время перехода по серверу
+               ResultEntityId = @ResultEntityId, -- Подтверждённый идентификатор
+               SettledUtc = CASE WHEN @Settled = 1 THEN @now ELSE NULL END, -- Конец попытки
+               OpenSlot = CASE WHEN @Settled = 1 THEN AttemptId ELSE @OpenSlot END -- Освобождение слота
+         WHERE AttemptId = @AttemptId AND EmployeeId = @EmployeeId AND ConflictKey = @ConflictKey
+           AND CommandKind = @CommandKind AND State = @ExpectedState AND OpenSlot = @OpenSlot;
+        SELECT @@ROWCOUNT; -- Совпала ровно одна допустимая строка
+        """;
+
+    /// <summary>Читает результат сотрудника без раскрытия данных чужой конфликтующей попытки.</summary>
+    internal const string SELECT_ClayzorOperationJournalLatest = """
+        SELECT TOP (1)
+               AttemptId,       -- Долговечный идентификатор попытки
+               EmployeeId,      -- Сотрудник, определённый сервером
+               ConflictKey,     -- Ключ конфликтующих действий
+               CommandKind,     -- Тип команды
+               State,           -- Состояние исхода
+               ResultEntityId   -- Идентификатор принятого результата
+          FROM dbo.ClayzorOperationJournal
+         WHERE EmployeeId = @EmployeeId AND ConflictKey = @ConflictKey
+         ORDER BY CASE WHEN SettledUtc IS NULL THEN 0 ELSE 1 END, CreatedUtc DESC, AttemptId DESC;
+        """;
+
+    internal const string SELECT_ClayzorOperationJournalLatestByKind = """
+        SELECT TOP (1) AttemptId, EmployeeId, ConflictKey, CommandKind, State, ResultEntityId
+          FROM dbo.ClayzorOperationJournal
+         WHERE EmployeeId = @EmployeeId AND ConflictKey = @ConflictKey AND CommandKind = @CommandKind
+         ORDER BY CASE WHEN SettledUtc IS NULL THEN 0 ELSE 1 END, CreatedUtc DESC, AttemptId DESC;
+        """;
+
+    internal const string SELECT_ClayzorOperationJournalLatestByKinds = """
+        SELECT TOP (1) AttemptId, EmployeeId, ConflictKey, CommandKind, State, ResultEntityId
+          FROM dbo.ClayzorOperationJournal
+         WHERE EmployeeId = @EmployeeId AND ConflictKey = @ConflictKey AND CommandKind IN @CommandKinds
+         ORDER BY CASE WHEN SettledUtc IS NULL THEN 0 ELSE 1 END, CreatedUtc DESC, AttemptId DESC;
+        """;
+
+    /// <summary>Перечисляет заблокированные области команды без сотрудника и содержания попытки.</summary>
+    internal const string SELECT_ClayzorOperationJournalOpenScopes = """
+        SELECT ConflictKey -- Ключ записи с неразрешённым исходом
+          FROM dbo.ClayzorOperationJournal
+         WHERE CommandKind = @CommandKind AND OpenSlot = @OpenSlot
+         UNION
+        SELECT ConflictKey -- Ключ записи с неподтверждённым свидетельством legacy
+          FROM dbo.ClayzorLegacyOperationEvidence
+         WHERE CommandKind = @CommandKind AND ResolvedUtc IS NULL;
+        """;
+
+    /// <summary>Фиксирует отдельное legacy-свидетельство без доверия к клиентскому исходу.</summary>
+    internal const string INSERT_ClayzorLegacyOperationEvidence = """
+        IF NOT EXISTS (SELECT 1 FROM dbo.ClayzorLegacyOperationEvidence WITH (UPDLOCK, HOLDLOCK)
+                        WHERE AttemptId = @AttemptId)
+            INSERT INTO dbo.ClayzorLegacyOperationEvidence
+                (AttemptId, EmployeeId, ConflictKey, CommandKind, ImportedUtc)
+            VALUES
+                (@AttemptId, @EmployeeId, @ConflictKey, @CommandKind, SYSUTCDATETIME());
+        SELECT CONVERT(bit, CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.ClayzorLegacyOperationEvidence
+             WHERE AttemptId = @AttemptId AND EmployeeId = @EmployeeId
+               AND ConflictKey = @ConflictKey AND CommandKind = @CommandKind
+        ) THEN 1 ELSE 0 END); -- Свидетельство принадлежит тому же сотруднику и команде
+        """;
+
+    /// <summary>Учитывает связанную цель неподтверждённой прежней операции.</summary>
+    internal const string INSERT_ClayzorLegacyOperationScope = """
+        IF NOT EXISTS (
+            SELECT 1 FROM dbo.ClayzorLegacyOperationScope WITH (UPDLOCK, HOLDLOCK)
+             WHERE AttemptId = @AttemptId AND ConflictKey = @ConflictKey
+        )
+            INSERT INTO dbo.ClayzorLegacyOperationScope (AttemptId, ConflictKey)
+            VALUES (@AttemptId, @ConflictKey);
+        SELECT 1; -- Связанная область учтена
+        """;
+
+    /// <summary>Читает метаданные точного серверного плана перед переносом старого свидетельства.</summary>
+    internal const string SELECT_ClayzorTelWorkflowExactForUpdate = """
+        SELECT EmployeeId,      -- Подтверждённый сотрудник
+               OriginalPhoneId, -- Исходный ключ номера
+               Deleting        -- Вид операции
+          FROM dbo.ClayzorTelWorkflow WITH (UPDLOCK, HOLDLOCK)
+         WHERE AttemptId = @AttemptId;
+        """;
+
+    /// <summary>Возвращает фазы собственного открытого плана без целей, отпечатков и значений полей.</summary>
+    internal const string SELECT_ClayzorTelWorkflowActiveSummary = """
+        SELECT TOP (1)
+               workflow.AttemptId, -- Идентификатор попытки
+               workflow.SqlConfirmed, -- Подтверждение SQL
+               workflow.PreStepCount, -- План до SQL
+               steps.ConfirmedPreSteps, -- Подтверждено до SQL
+               workflow.PostStepCount, -- План после SQL, если подготовлен
+               steps.ConfirmedPostSteps, -- Подтверждено после SQL
+               steps.DispatchingSteps -- Команды с неподтверждённым ответом
+          FROM dbo.ClayzorTelWorkflow AS workflow
+          OUTER APPLY (
+              SELECT COUNT(CASE WHEN BeforeSql = 1 AND State = 2 THEN 1 END) AS ConfirmedPreSteps,
+                     COUNT(CASE WHEN BeforeSql = 0 AND State = 2 THEN 1 END) AS ConfirmedPostSteps,
+                     COUNT(CASE WHEN State = 1 THEN 1 END) AS DispatchingSteps
+                FROM dbo.ClayzorTelWorkflowStep
+               WHERE AttemptId = workflow.AttemptId
+          ) AS steps
+         WHERE workflow.EmployeeId = @EmployeeId AND workflow.ClosedUtc IS NULL
+           AND (workflow.ConflictKey = @Scope OR workflow.ResultConflictKey = @Scope)
+         ORDER BY workflow.CreatedUtc DESC, workflow.AttemptId DESC;
+        """;
+
+    /// <summary>Создаёт проверенный план изменения номера. Повтор того же контекста не меняет его.</summary>
+    internal const string INSERT_ClayzorTelWorkflow = """
+        IF NOT EXISTS (SELECT 1 FROM dbo.ClayzorTelWorkflow WITH (UPDLOCK, HOLDLOCK) WHERE AttemptId = @AttemptId)
+            INSERT INTO dbo.ClayzorTelWorkflow
+                (AttemptId, EmployeeId, OriginalPhoneId, Deleting, ConflictKey, PreStepCount, SqlConfirmed, CreatedUtc, OpenSlot)
+            VALUES
+                (@AttemptId, @EmployeeId, @OriginalPhoneId, @Deleting, @ConflictKey, @PreStepCount, 0,
+                 SYSUTCDATETIME(), '00000000-0000-0000-0000-000000000000');
+        SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflow
+             WHERE AttemptId = @AttemptId AND EmployeeId = @EmployeeId
+               AND OriginalPhoneId = @OriginalPhoneId AND Deleting = @Deleting
+               AND ConflictKey = @ConflictKey AND PreStepCount = @PreStepCount AND ClosedUtc IS NULL
+        ) THEN 1 ELSE 0 END; -- Контекст совпадает, план открыт
+        """;
+
+    /// <summary>Запоминает количество последующих команд после полного подтверждения подготовки АТС.</summary>
+    internal const string UPDATE_ClayzorTelWorkflowSqlReady = """
+        UPDATE workflow
+           SET PostStepCount = @PostStepCount
+          FROM dbo.ClayzorTelWorkflow workflow
+         WHERE workflow.AttemptId = @AttemptId AND workflow.EmployeeId = @EmployeeId AND workflow.ClosedUtc IS NULL
+           AND (workflow.PostStepCount IS NULL OR workflow.PostStepCount = @PostStepCount)
+           AND workflow.PreStepCount = (
+               SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep
+                WHERE AttemptId = @AttemptId AND BeforeSql = 1 AND State = 2
+           );
+        SELECT @@ROWCOUNT; -- SQL разрешён после подготовки
+        """;
+
+    /// <summary>Фиксирует отпечаток шага, подготовленного сервером. Повтор проверяет точное совпадение.</summary>
+    internal const string INSERT_ClayzorTelWorkflowPreparedStep = """
+        IF NOT EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflow WITH (UPDLOCK, HOLDLOCK)
+             WHERE AttemptId = @AttemptId AND EmployeeId = @EmployeeId AND ClosedUtc IS NULL
+               AND @StepIndex >= 0 AND @StepIndex < CASE WHEN @BeforeSql = 1 THEN PreStepCount ELSE PostStepCount END
+        ) BEGIN SELECT 0; RETURN; END;
+        IF NOT EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflowStep WITH (UPDLOCK, HOLDLOCK)
+             WHERE AttemptId = @AttemptId AND BeforeSql = @BeforeSql AND StepIndex = @StepIndex
+        )
+            INSERT INTO dbo.ClayzorTelWorkflowStep (AttemptId, BeforeSql, StepIndex, Fingerprint, State)
+            VALUES (@AttemptId, @BeforeSql, @StepIndex, @Fingerprint, 0);
+        SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflowStep
+             WHERE AttemptId = @AttemptId AND BeforeSql = @BeforeSql AND StepIndex = @StepIndex AND Fingerprint = @Fingerprint
+        ) THEN 1 ELSE 0 END; -- Точный отпечаток подготовлен заранее
+        """;
+
+    /// <summary>Отмечает ровно одну отправку подготовленного шага в правильной последовательности.</summary>
+    internal const string UPDATE_ClayzorTelWorkflowStepDispatched = """
+        IF NOT EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflow WITH (UPDLOCK, HOLDLOCK)
+             WHERE AttemptId = @AttemptId AND EmployeeId = @EmployeeId AND ClosedUtc IS NULL
+               AND (@BeforeSql = 1 AND OriginalPhoneId = @PhoneId AND SqlConfirmed = 0
+                 OR @BeforeSql = 0 AND ResultPhoneId = @PhoneId AND SqlConfirmed = 1)
+        ) BEGIN SELECT 0; RETURN; END;
+        IF EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflowStep
+             WHERE AttemptId = @AttemptId AND BeforeSql = @BeforeSql AND StepIndex = @StepIndex
+               AND Fingerprint = @Fingerprint AND State = 2
+        ) BEGIN SELECT 2; RETURN; END;
+        IF @StepIndex <> (
+            SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep
+             WHERE AttemptId = @AttemptId AND BeforeSql = @BeforeSql AND StepIndex < @StepIndex AND State = 2
+        ) BEGIN SELECT 0; RETURN; END;
+        UPDATE dbo.ClayzorTelWorkflowStep SET State = 1
+         WHERE AttemptId = @AttemptId AND BeforeSql = @BeforeSql AND StepIndex = @StepIndex
+           AND Fingerprint = @Fingerprint AND State = 0;
+        SELECT @@ROWCOUNT; -- Разрешена первая отправка
+        """;
+
+    /// <summary>Записывает ответ внешней процедуры для того же ранее отправленного шага.</summary>
+    internal const string UPDATE_ClayzorTelWorkflowStepConfirmed = """
+        IF NOT EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflow WITH (UPDLOCK, HOLDLOCK)
+             WHERE AttemptId = @AttemptId AND EmployeeId = @EmployeeId AND ClosedUtc IS NULL
+               AND (@BeforeSql = 1 AND OriginalPhoneId = @PhoneId AND SqlConfirmed = 0
+                 OR @BeforeSql = 0 AND ResultPhoneId = @PhoneId AND SqlConfirmed = 1)
+        ) BEGIN SELECT 0; RETURN; END;
+        UPDATE dbo.ClayzorTelWorkflowStep SET State = 2
+         WHERE AttemptId = @AttemptId AND BeforeSql = @BeforeSql AND StepIndex = @StepIndex
+           AND Fingerprint = @Fingerprint AND State IN (1, 2);
+        SELECT @@ROWCOUNT; -- Точная отправка подтверждена
+        """;
+
+    /// <summary>Связывает результат SQL с планом до COMMIT DML, включая новый идентификатор номера.</summary>
+    internal const string UPDATE_ClayzorTelWorkflowSqlConfirmed = """
+        UPDATE workflow
+           SET SqlConfirmed = 1, ResultPhoneId = @ResultPhoneId, ResultConflictKey = @ResultConflictKey
+          FROM dbo.ClayzorTelWorkflow workflow
+         WHERE workflow.AttemptId = @AttemptId AND workflow.EmployeeId = @EmployeeId
+           AND workflow.OriginalPhoneId = @OriginalPhoneId AND workflow.Deleting = @Deleting AND workflow.ClosedUtc IS NULL
+           AND workflow.SqlConfirmed = 0 AND workflow.PostStepCount IS NOT NULL
+           AND workflow.PostStepCount = (
+               SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep WHERE AttemptId = @AttemptId AND BeforeSql = 0
+           );
+        SELECT @@ROWCOUNT; -- SQL и план фиксируются вместе
+        """;
+
+    /// <summary>Блокирует проверенный план на время SQL и сопоставляет действие с исходной сущностью.</summary>
+    internal const string SELECT_ClayzorTelWorkflowSqlReady = """
+        SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.ClayzorTelWorkflow AS workflow WITH (UPDLOCK, HOLDLOCK)
+             WHERE workflow.AttemptId = @AttemptId AND workflow.EmployeeId = @EmployeeId
+               AND workflow.OriginalPhoneId = @OriginalPhoneId AND workflow.Deleting = @Deleting
+               AND workflow.ClosedUtc IS NULL AND workflow.SqlConfirmed = 0
+               AND workflow.PostStepCount = (
+                   SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep WHERE AttemptId = @AttemptId AND BeforeSql = 0
+               )
+               AND workflow.PreStepCount = (
+                   SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep WHERE AttemptId = @AttemptId AND BeforeSql = 1 AND State = 2
+               )
+        ) THEN 1 ELSE 0 END; -- План готов к записи SQL
+        """;
+
+    /// <summary>Освобождает план только после подтверждения SQL и каждого внешнего шага.</summary>
+    internal const string UPDATE_ClayzorTelWorkflowCompleted = """
+        UPDATE workflow
+           SET ClosedUtc = COALESCE(ClosedUtc, SYSUTCDATETIME()), OpenSlot = AttemptId
+          FROM dbo.ClayzorTelWorkflow workflow
+         WHERE workflow.AttemptId = @AttemptId AND workflow.EmployeeId = @EmployeeId AND workflow.SqlConfirmed = 1
+           AND workflow.PreStepCount = (
+               SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep WHERE AttemptId = @AttemptId AND BeforeSql = 1 AND State = 2
+           )
+           AND workflow.PostStepCount = (
+               SELECT COUNT(*) FROM dbo.ClayzorTelWorkflowStep WHERE AttemptId = @AttemptId AND BeforeSql = 0 AND State = 2
+           );
+        SELECT @@ROWCOUNT; -- Все части плана завершены
+        """;
+
+    /// <summary>Отпускает попытку после доказанного отказа до любого внешнего эффекта.</summary>
+    internal const string UPDATE_ClayzorTelWorkflowAbandoned = """
+        UPDATE workflow
+           SET ClosedUtc = COALESCE(ClosedUtc, SYSUTCDATETIME()), OpenSlot = AttemptId
+          FROM dbo.ClayzorTelWorkflow workflow
+         WHERE workflow.AttemptId = @AttemptId AND workflow.EmployeeId = @EmployeeId AND workflow.SqlConfirmed = 0
+           AND NOT EXISTS (SELECT 1 FROM dbo.ClayzorTelWorkflowStep WITH (UPDLOCK, HOLDLOCK)
+                            WHERE AttemptId = @AttemptId AND State <> 0)
+           AND NOT EXISTS (SELECT 1 FROM dbo.ClayzorOperationJournal WITH (UPDLOCK, HOLDLOCK)
+                            WHERE AttemptId = @AttemptId AND State <> 4);
+        SELECT @@ROWCOUNT; -- Отсутствуют отправки и неразрешённый SQL
+        """;
+
+    /// <summary>Фиксирует серверную дату проверки одновременно с обновлением фактического расположения.</summary>
+    internal const string INSERT_ClayzorLocationFactReceipt = """
+        INSERT INTO dbo.ClayzorLocationFactReceipt (AttemptId, EquipmentId, LocationId, CheckedAtUtc)
+        VALUES (@AttemptId, @EquipmentId, @LocationId, @CheckedAtUtc);
+        """;
+
+    /// <summary>Читает дату конкретной попытки после независимой проверки подтверждения в журнале.</summary>
+    internal const string SELECT_ClayzorLocationFactReceipt = """
+        SELECT CheckedAtUtc -- Дата фактической проверки этой попытки
+          FROM dbo.ClayzorLocationFactReceipt
+         WHERE AttemptId = @AttemptId AND EquipmentId = @EquipmentId AND LocationId = @LocationId;
+        """;
+
+    /// <summary>Возвращает последнее серверное подтверждение факта для своего сотрудника и места.</summary>
+    internal const string SELECT_ClayzorLocationFactLatestReceipt = """
+        SELECT TOP (1) receipt.CheckedAtUtc -- Дата проверки с подтверждённым исходом
+          FROM dbo.ClayzorLocationFactReceipt AS receipt
+          JOIN dbo.ClayzorOperationJournal AS journal ON journal.AttemptId = receipt.AttemptId
+         WHERE receipt.EquipmentId = @EquipmentId AND receipt.LocationId = @LocationId
+           AND journal.EmployeeId = @EmployeeId AND journal.CommandKind = N'confirm-location' AND journal.State = 3
+         ORDER BY receipt.CheckedAtUtc DESC, receipt.AttemptId DESC;
+        """;
+
     /// <summary>Подтверждённая процедура синхронизации списков Safe/Blocked.</summary>
     internal const string SP_SlBlSynchronize = "dbo.sp_MailboxesSlBlSynchronize";
 
@@ -494,8 +1003,7 @@ WHERE КодМоделиОборудования = @Id
               WHERE КодМоделиОборудования = @Id
                 AND КодТипаОборудования <> @EquipmentTypeId)";
 
-    /// <summary>Создание модели оборудования с возвратом идентификатора.</summary>
-    public const string INSERT_МоделиОборудования = @"
+    private const string INSERT_МоделиОборудования_Поля = @"
 INSERT INTO МоделиОборудования (
     КодРесурса,         -- ресурс
     КодТипаОборудования,-- тип оборудования
@@ -515,8 +1023,15 @@ INSERT INTO МоделиОборудования (
 ) VALUES (
     @ResourceId, @EquipmentTypeId, @Name, @PartNumber, @Cpu, @MonitorSize,
     @MemoryTypeId, @MemoryBanks, @IsMultimedia, @NetworkInterfaces, @NetworkName,
-    @Driver, @LifeTime, N'', @Description);
+    @Driver, @LifeTime, N'', @Description);";
+
+    /// <summary>Создание модели оборудования с возвратом идентификатора.</summary>
+    public const string INSERT_МоделиОборудования = INSERT_МоделиОборудования_Поля + @"
 SELECT CAST(@@IDENTITY AS int) AS Id; -- идентификатор созданной модели";
+
+    /// <summary>Возвращает идентификатор вставки модели из той же SQL-области, исключая вставки триггеров.</summary>
+    public const string INSERT_МоделиОборудования_Журнал = INSERT_МоделиОборудования_Поля + @"
+SELECT CAST(SCOPE_IDENTITY() AS int) AS Id; -- идентификатор созданной модели";
 
     private const string UPDATE_МоделиОборудования_Поля = @"
 UPDATE МоделиОборудования SET
@@ -924,8 +1439,7 @@ WHERE P.КодОборудования = @EquipmentId
   AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X
                   WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)";
 
-    /// <summary>Проверка фактических before-значений связи внутри транзакции. Формат: параметры всех исходных полей.</summary>
-    public const string GUARD_ИсходнаяТелефоннаяСвязь = @"
+    private const string GUARD_ИсходнаяТелефоннаяСвязь_Проверка = @"
 IF NOT EXISTS (SELECT 1 FROM ТелефонныеНомераОборудование WITH (UPDLOCK, HOLDLOCK)
                WHERE КодТелефонногоНомера = {0} AND КодОборудования = @КодОборудования
                  AND (КодОборудованияПодключения = {1} OR (КодОборудованияПодключения IS NULL AND {1} IS NULL))
@@ -933,18 +1447,33 @@ IF NOT EXISTS (SELECT 1 FROM ТелефонныеНомераОборудова�
                  AND (ЗадержкаАвтонабора = {3} OR (ЗадержкаАвтонабора IS NULL AND {3} IS NULL))
                  AND Основной = {4}
                  AND (СрокВозврата = {5} OR (СрокВозврата IS NULL AND {5} IS NULL))
-                 AND ISNULL(Примечание, '') = {6})
+                 AND ISNULL(Примечание, '') = {6})";
+
+    /// <summary>Проверка фактических исходных значений связи внутри транзакции.</summary>
+    public const string GUARD_ИсходнаяТелефоннаяСвязь = GUARD_ИсходнаяТелефоннаяСвязь_Проверка + @"
     RAISERROR('Исходная телефонная связь была изменена или удалена. Обновите данные и повторите операцию.', 16, 1);";
 
-    /// <summary>Удаление подтверждённой связи номера с оборудованием. Формат: параметр номера.</summary>
-    public const string DELETE_ОборудованиеТелефона = @"
+    private const string RETURN_КонфликтТелефоннойСвязи = @"
+    BEGIN SELECT -1; RETURN; END; -- Исходная связь больше не совпадает";
+
+    /// <summary>Возвращает конфликт связи, оставляя откат вызывающей транзакции.</summary>
+    public const string GUARD_ИсходнаяТелефоннаяСвязьEnlisted =
+        GUARD_ИсходнаяТелефоннаяСвязь_Проверка + RETURN_КонфликтТелефоннойСвязи;
+
+    private const string DELETE_ОборудованиеТелефона_Строка = @"
 DELETE FROM ТелефонныеНомераОборудование
 WHERE КодТелефонногоНомера = {0} AND КодОборудования = @КодОборудования;
-IF @@ROWCOUNT <> 1
+IF @@ROWCOUNT <> 1";
+
+    /// <summary>Удаление подтверждённой связи номера с оборудованием. Формат: параметр номера.</summary>
+    public const string DELETE_ОборудованиеТелефона = DELETE_ОборудованиеТелефона_Строка + @"
     RAISERROR('Исходная телефонная связь не найдена. Изменения отменены.', 16, 1);";
 
-    /// <summary>Обновление связи и CAS по фактическим before-значениям. Формат: after- и before-параметры.</summary>
-    public const string UPDATE_ОборудованиеТелефонаСвязи = @"
+    /// <summary>Удаляет одну связь внутри вызывающей транзакции и возвращает конфликт при несовпадении.</summary>
+    public const string DELETE_ОборудованиеТелефонаEnlisted =
+        DELETE_ОборудованиеТелефона_Строка + RETURN_КонфликтТелефоннойСвязи;
+
+    private const string UPDATE_ОборудованиеТелефонаСвязи_Строка = @"
 UPDATE ТелефонныеНомераОборудование
 SET КодОборудованияПодключения = {1},
     НомерАвтонабора = {2},
@@ -959,8 +1488,15 @@ WHERE КодТелефонногоНомера = {0} AND КодОборудов�
   AND Основной = {10}
   AND (СрокВозврата = {11} OR (СрокВозврата IS NULL AND {11} IS NULL))
   AND ISNULL(Примечание, '') = {12};
-IF @@ROWCOUNT <> 1
+IF @@ROWCOUNT <> 1";
+
+    /// <summary>Обновление связи и CAS по фактическим исходным значениям.</summary>
+    public const string UPDATE_ОборудованиеТелефонаСвязи = UPDATE_ОборудованиеТелефонаСвязи_Строка + @"
     RAISERROR('Исходная телефонная связь была изменена или удалена. Изменения отменены.', 16, 1);";
+
+    /// <summary>Обновляет связь внутри вызывающей транзакции и возвращает конфликт при несовпадении.</summary>
+    public const string UPDATE_ОборудованиеТелефонаСвязиEnlisted =
+        UPDATE_ОборудованиеТелефонаСвязи_Строка + RETURN_КонфликтТелефоннойСвязи;
 
     /// <summary>Обновление срока возврата связи. Формат: параметры номера, срока и примечания.</summary>
     public const string UPDATE_ОборудованиеТелефонаСрокВозврата = @"
@@ -1164,6 +1700,141 @@ BEGIN
     WHERE S.КодРасположения <> @КодРасположения;
 END";
 
+    /// <summary>Выбирает действительные области SIM для перемещения оборудования.</summary>
+    internal const string SELECT_ОборудованиеРасположениеПереносSim = @"
+
+DECLARE @СетевоеИмя varchar(50) = '';
+SET @СетевоеИмя = ISNULL((
+    SELECT E.СетевоеИмя
+    FROM vwОборудование E
+    WHERE E.КодОборудования = @КодОборудования AND E.СетевоеИмя <> '' AND E.Списано IS NULL
+      AND EXISTS (SELECT 1 FROM МоделиОборудования M
+                  WHERE M.КодМоделиОборудования = E.КодМоделиОборудования
+                    AND M.КодТипаОборудования = 28)), '');
+
+SELECT R.КодОборудования AS EquipmentId, COUNT_BIG(*) AS SourceRowCount
+FROM ОборудованиеРасположение R
+INNER JOIN vwОборудование E ON R.КодОборудования = E.КодОборудования
+INNER JOIN МоделиОборудования M ON E.КодМоделиОборудования = M.КодМоделиОборудования
+WHERE @СетевоеИмя <> ''
+  AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение P
+                  WHERE P.КодОборудования = @КодОборудования AND P.От > @От)
+  AND E.Списано IS NULL AND M.КодТипаОборудования = 27
+  AND R.Примечания LIKE (@СетевоеИмя + '%')
+  AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X
+                  WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)
+  AND R.КодРасположения <> @КодРасположения
+GROUP BY R.КодОборудования
+ORDER BY R.КодОборудования;
+";
+
+    /// <summary>Записывает исходное расположение и ожидаемую группу SIM в транзакции вызывающей стороны.</summary>
+    internal const string INSERT_ОборудованиеРасположениеEnlisted = @"
+
+DECLARE @LocationFrom datetime = @От;
+IF @КодОборудования <= 0 OR EXISTS (
+    SELECT 1 FROM ОборудованиеРасположение WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодОборудования = @КодОборудования AND От >= @От
+)
+BEGIN
+    SELECT 10 AS Status, 0 AS ConfirmedEquipmentId;
+    RETURN;
+END;
+
+INSERT ОборудованиеРасположение (КодОборудования, От, КодРасположения, СрокВозврата, Примечания)
+VALUES (@КодОборудования, @От, @КодРасположения, @СрокВозврата, @Примечания);
+
+IF @@ROWCOUNT <> 1
+BEGIN
+    SELECT 12 AS Status, 0 AS ConfirmedEquipmentId;
+    RETURN;
+END;
+
+DECLARE @LocationStationName varchar(50) = '';
+SET @LocationStationName = ISNULL((
+    SELECT E.СетевоеИмя
+    FROM vwОборудование E
+    WHERE E.КодОборудования = @КодОборудования AND E.СетевоеИмя <> '' AND E.Списано IS NULL
+      AND EXISTS (SELECT 1 FROM МоделиОборудования M
+                  WHERE M.КодМоделиОборудования = E.КодМоделиОборудования
+                    AND M.КодТипаОборудования = 28)), '');
+
+DECLARE @LocationSimRows TABLE (
+    EquipmentId int NOT NULL,
+    ReturnDate datetime NULL,
+    Notes nvarchar(max) NULL
+);
+
+INSERT @LocationSimRows (EquipmentId, ReturnDate, Notes)
+SELECT R.КодОборудования, R.СрокВозврата, R.Примечания
+FROM ОборудованиеРасположение R WITH (UPDLOCK, HOLDLOCK)
+INNER JOIN vwОборудование E ON R.КодОборудования = E.КодОборудования
+INNER JOIN МоделиОборудования M ON E.КодМоделиОборудования = M.КодМоделиОборудования
+WHERE @LocationStationName <> ''
+  AND E.Списано IS NULL AND M.КодТипаОборудования = 27
+  AND R.Примечания LIKE (@LocationStationName + '%')
+  AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение X WITH (UPDLOCK, HOLDLOCK)
+                  WHERE X.КодОборудования = R.КодОборудования AND X.От > R.От)
+  AND R.КодРасположения <> @КодРасположения;
+
+IF EXISTS (SELECT EquipmentId FROM @LocationSimRows GROUP BY EquipmentId HAVING COUNT(*) <> 1)
+   OR EXISTS (SELECT EquipmentId FROM @LocationSimRows EXCEPT SELECT EquipmentId FROM @ExpectedSim)
+   OR EXISTS (SELECT EquipmentId FROM @ExpectedSim EXCEPT SELECT EquipmentId FROM @LocationSimRows)
+   OR EXISTS (
+       SELECT 1 FROM @LocationSimRows S
+       JOIN ОборудованиеРасположение P WITH (UPDLOCK, HOLDLOCK)
+         ON P.КодОборудования = S.EquipmentId AND P.От = @От
+   )
+BEGIN
+    SELECT 11 AS Status, 0 AS ConfirmedEquipmentId;
+    RETURN;
+END;
+
+DECLARE @LocationSimCount int = (SELECT COUNT(*) FROM @LocationSimRows);
+IF @LocationSimCount > 0
+BEGIN
+    INSERT ОборудованиеРасположение (КодОборудования, От, КодРасположения, СрокВозврата, Примечания)
+    SELECT EquipmentId, @От, @КодРасположения, ReturnDate, Notes
+    FROM @LocationSimRows;
+
+    IF @@ROWCOUNT <> @LocationSimCount
+    BEGIN
+        SELECT 12 AS Status, 0 AS ConfirmedEquipmentId;
+        RETURN;
+    END;
+END;
+
+INSERT @LocationSimRows (EquipmentId, ReturnDate, Notes)
+VALUES (@КодОборудования, @СрокВозврата, @Примечания);
+";
+
+    /// <summary>Проверяет сохранённые расположения после завершения всех связанных записей.</summary>
+    internal const string CHECK_ОборудованиеРасположениеEnlisted = @"
+
+IF EXISTS (
+    SELECT 1
+    FROM @LocationSimRows S
+    WHERE (SELECT COUNT(*) FROM ОборудованиеРасположение P WITH (UPDLOCK, HOLDLOCK)
+           WHERE P.КодОборудования = S.EquipmentId AND P.От = @LocationFrom) <> 1
+       OR NOT EXISTS (
+           SELECT 1
+           FROM ОборудованиеРасположение P WITH (UPDLOCK, HOLDLOCK)
+           WHERE P.КодОборудования = S.EquipmentId
+             AND P.От = @LocationFrom
+             AND P.КодРасположения = @КодРасположения
+             AND EXISTS (
+                 SELECT P.СрокВозврата, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), P.Примечания), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), P.Примечания), N''))
+                 INTERSECT
+                 SELECT S.ReturnDate, CONVERT(varbinary(max), ISNULL(S.Notes, N'')), DATALENGTH(ISNULL(S.Notes, N''))
+             )
+       )
+)
+BEGIN
+    SELECT 12 AS Status, 0 AS ConfirmedEquipmentId;
+    RETURN;
+END;
+";
+
     /// <summary>Обновление срока возврата и примечаний расположения с исходной версией строки.</summary>
     public const string UPDATE_ОборудованиеРасположение = @"
 SET XACT_ABORT ON;
@@ -1236,6 +1907,128 @@ BEGIN
 END;
 COMMIT TRANSACTION;";
 
+    internal const string UPDATE_ОборудованиеРасположениеEnlisted = @"
+-- При ненулевом статусе вызывающая сторона откатывает транзакцию.
+DECLARE @Status int = 0;
+DECLARE @ConfirmedEquipmentId int = 0;
+
+UPDATE ОборудованиеРасположение
+SET СрокВозврата = @СрокВозврата, Примечания = @Примечания
+WHERE КодОборудования = @КодОборудования
+  AND От = @От
+  AND КодРасположения = @КодРасположения
+  AND Изменено = @ИсходноеИзменено
+  AND NOT EXISTS (SELECT 1 FROM ОборудованиеРасположение WITH (UPDLOCK, HOLDLOCK)
+                  WHERE КодОборудования = @КодОборудования AND От > @От);
+
+IF @@ROWCOUNT <> 1 SET @Status = 1;
+
+IF @Status = 0
+BEGIN
+    SELECT @ConfirmedEquipmentId = period.КодОборудования
+    FROM ОборудованиеРасположение AS period WITH (UPDLOCK, HOLDLOCK)
+    WHERE period.КодОборудования = @КодОборудования
+      AND period.КодОборудования > 0
+      AND period.КодРасположения = @КодРасположения
+      AND period.От = @От
+      AND (SELECT COUNT(*) FROM ОборудованиеРасположение WITH (UPDLOCK, HOLDLOCK)
+           WHERE КодОборудования = @КодОборудования AND От = @От) = 1
+      AND EXISTS (
+          SELECT period.СрокВозврата,
+                 CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), period.Примечания), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), period.Примечания), N''))
+          INTERSECT
+          SELECT @СрокВозврата,
+                 CONVERT(varbinary(max), CONVERT(nvarchar(max), @Примечания)), DATALENGTH(CONVERT(nvarchar(max), @Примечания))
+      );
+
+    IF @ConfirmedEquipmentId = 0 SET @Status = 3;
+END;
+
+SELECT @Status AS Status, @ConfirmedEquipmentId AS ConfirmedEquipmentId;";
+
+    internal const string UPDATE_ОборудованиеСотрудниковEnlisted = @"
+-- При ненулевом статусе вызывающая сторона откатывает транзакцию.
+DECLARE @Status int = 0;
+DECLARE @ConfirmedEquipmentId int = 0;
+
+UPDATE ОборудованиеСотрудников
+SET СрокВозврата = @СрокВозврата, Примечания = @Примечания
+WHERE КодОборудования = @КодОборудования
+  AND От = @От
+  AND КодСотрудника = @КодСотрудника
+  AND Изменено = @ИсходноеИзменено
+  AND ((До IS NULL AND @ИсходноеДо IS NULL) OR До = @ИсходноеДо)
+  AND NOT EXISTS (SELECT 1 FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+                  WHERE КодОборудования = @КодОборудования AND От > @От);
+
+IF @@ROWCOUNT <> 1 SET @Status = 1;
+
+IF @Status = 0
+BEGIN
+    SELECT @ConfirmedEquipmentId = period.КодОборудования
+    FROM ОборудованиеСотрудников AS period WITH (UPDLOCK, HOLDLOCK)
+    WHERE period.КодОборудования = @КодОборудования
+      AND period.КодОборудования > 0
+      AND period.КодСотрудника = @КодСотрудника
+      AND period.От = @От
+      AND ((period.До IS NULL AND @ИсходноеДо IS NULL) OR period.До = @ИсходноеДо)
+      AND (SELECT COUNT(*) FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+           WHERE КодОборудования = @КодОборудования AND От = @От) = 1
+      AND EXISTS (
+          SELECT period.СрокВозврата,
+                 CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), period.Примечания), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), period.Примечания), N''))
+          INTERSECT
+          SELECT @СрокВозврата,
+                 CONVERT(varbinary(max), CONVERT(nvarchar(max), @Примечания)), DATALENGTH(CONVERT(nvarchar(max), @Примечания))
+      );
+
+    IF @ConfirmedEquipmentId = 0 SET @Status = 3;
+END;
+
+SELECT @Status AS Status, @ConfirmedEquipmentId AS ConfirmedEquipmentId;";
+
+    internal const string INSERT_ОборудованиеСотрудниковEnlisted = @"
+-- При ненулевом статусе вызывающая сторона откатывает транзакцию.
+DECLARE @Status int = 0;
+DECLARE @ConfirmedEquipmentId int = 0;
+
+IF EXISTS (
+    SELECT 1 FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодОборудования = @КодОборудования
+      AND От = @От
+)
+    SET @Status = 2;
+ELSE
+BEGIN
+    INSERT ОборудованиеСотрудников (КодОборудования, От, КодСотрудника, СрокВозврата, Примечания)
+    VALUES (@КодОборудования, @От, @КодСотрудника, @СрокВозврата, @Примечания);
+
+    IF @@ROWCOUNT <> 1 SET @Status = 3;
+END;
+
+IF @Status = 0
+BEGIN
+    SELECT @ConfirmedEquipmentId = period.КодОборудования
+    FROM ОборудованиеСотрудников AS period WITH (UPDLOCK, HOLDLOCK)
+    WHERE period.КодОборудования = @КодОборудования
+      AND period.КодОборудования > 0
+      AND period.От = @От
+      AND period.КодСотрудника = @КодСотрудника
+      AND (SELECT COUNT(*) FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+           WHERE КодОборудования = @КодОборудования AND От = @От) = 1
+      AND EXISTS (
+          SELECT period.СрокВозврата,
+                 CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), period.Примечания), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), period.Примечания), N''))
+          INTERSECT
+          SELECT @СрокВозврата,
+                 CONVERT(varbinary(max), CONVERT(nvarchar(max), @Примечания)), DATALENGTH(CONVERT(nvarchar(max), @Примечания))
+      );
+
+    IF @ConfirmedEquipmentId = 0 SET @Status = 3;
+END;
+
+SELECT @Status AS Status, @ConfirmedEquipmentId AS ConfirmedEquipmentId;";
+
     /// <summary>Учётные записи оборудования без паролей. Параметр: EquipmentId.</summary>
     public const string SELECT_ОборудованиеУчётныеЗаписи = @"
 SELECT КодОборудования,   -- оборудование
@@ -1267,6 +2060,8 @@ WHERE КодОборудования = @EquipmentId AND Логин = @Login";
     public const string INSERT_ОборудованиеУчётныеЗаписи = @"
 INSERT ОборудованиеУчётныеЗаписи (КодОборудования, Логин, Пароль, ОграниченныеПрава, Примечание)
 VALUES (@КодОборудования, @Логин, @Пароль, @ОграниченныеПрава, @Примечание)";
+
+    internal const string INSERT_ОборудованиеУчётныеЗаписиEnlisted = INSERT_ОборудованиеУчётныеЗаписи + ";\nSELECT @@ROWCOUNT;";
 
     /// <summary>Обновление учётной записи по составному ключу.</summary>
     public const string UPDATE_ОборудованиеУчётныеЗаписи = @"
@@ -1404,6 +2199,86 @@ BEGIN CATCH
     RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
 END CATCH;";
 
+    /// <summary>Подтверждает сохранение точного дневного снимка в транзакции вызывающей стороны.</summary>
+    internal const string UPDATE_КомпьютерыEnlisted = @"
+SET NOCOUNT ON;
+DECLARE @Status int = 0;
+DECLARE @ConfirmedEquipmentId int = 0;
+
+-- Вызывающая сторона откатывает транзакцию при ненулевом статусе.
+-- Статус 1 означает конфликт версии, 2 означает занятую дату, 3 означает результат без подтверждения.
+IF @ОжидаетсяСуществующий = 1
+BEGIN
+    UPDATE Компьютеры
+    SET RAM = @RAM,
+        RAMDetail = @RAMDetail,
+        HD = @HD,
+        HDDetail = @HDDetail,
+        SSD = @SSD,
+        SSDDetail = @SSDDetail,
+        КодСтандартнойКонфигурации1 = @КодСтандартнойКонфигурации1,
+        ДатаСтандартнойКонфигурации1 = @ДатаСтандартнойКонфигурации1,
+        КодСтандартнойКонфигурации2 = @КодСтандартнойКонфигурации2,
+        ДатаСтандартнойКонфигурации2 = @ДатаСтандартнойКонфигурации2,
+        Лицензия = @Лицензия,
+        Примечания = @Примечания
+    WHERE КодОборудования = @КодОборудования
+      AND С = @С
+      AND Изменено = @ИсходноеИзменено;
+
+    IF @@ROWCOUNT <> 1 SET @Status = 1;
+END
+ELSE IF EXISTS (SELECT 1 FROM Компьютеры WITH (UPDLOCK, HOLDLOCK)
+                WHERE КодОборудования = @КодОборудования AND С = @С)
+    SET @Status = 2;
+ELSE
+BEGIN
+    INSERT Компьютеры (КодОборудования, С, RAM, RAMDetail, HD, HDDetail, SSD, SSDDetail,
+                      КодСтандартнойКонфигурации1, ДатаСтандартнойКонфигурации1,
+                      КодСтандартнойКонфигурации2, ДатаСтандартнойКонфигурации2,
+                      Лицензия, Примечания)
+    VALUES (@КодОборудования, @С, @RAM, @RAMDetail, @HD, @HDDetail, @SSD, @SSDDetail,
+            @КодСтандартнойКонфигурации1, @ДатаСтандартнойКонфигурации1,
+            @КодСтандартнойКонфигурации2, @ДатаСтандартнойКонфигурации2,
+            @Лицензия, @Примечания);
+
+    IF @@ROWCOUNT <> 1 SET @Status = 3;
+END;
+
+IF @Status = 0
+BEGIN
+    IF (SELECT COUNT(*) FROM Компьютеры WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодОборудования = @КодОборудования AND С = @С) = 1
+    BEGIN
+        SELECT @ConfirmedEquipmentId = snapshot.КодОборудования
+        FROM Компьютеры AS snapshot WITH (UPDLOCK, HOLDLOCK)
+        WHERE snapshot.КодОборудования = @КодОборудования
+          AND snapshot.КодОборудования > 0
+          AND snapshot.С = @С
+          AND EXISTS (
+              SELECT snapshot.RAM, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), snapshot.RAMDetail), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), snapshot.RAMDetail), N'')),
+                     snapshot.HD, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), snapshot.HDDetail), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), snapshot.HDDetail), N'')),
+                     snapshot.SSD, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), snapshot.SSDDetail), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), snapshot.SSDDetail), N'')),
+                     snapshot.КодСтандартнойКонфигурации1, snapshot.ДатаСтандартнойКонфигурации1,
+                     snapshot.КодСтандартнойКонфигурации2, snapshot.ДатаСтандартнойКонфигурации2,
+                     CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), snapshot.Лицензия), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), snapshot.Лицензия), N'')),
+                     CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), snapshot.Примечания), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), snapshot.Примечания), N''))
+              INTERSECT
+              SELECT @RAM, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), @RAMDetail), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), @RAMDetail), N'')),
+                     @HD, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), @HDDetail), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), @HDDetail), N'')),
+                     @SSD, CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), @SSDDetail), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), @SSDDetail), N'')),
+                     @КодСтандартнойКонфигурации1, @ДатаСтандартнойКонфигурации1,
+                     @КодСтандартнойКонфигурации2, @ДатаСтандартнойКонфигурации2,
+                     CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), @Лицензия), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), @Лицензия), N'')),
+                     CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), @Примечания), N'')), DATALENGTH(ISNULL(CONVERT(nvarchar(max), @Примечания), N''))
+          );
+    END;
+
+    IF @ConfirmedEquipmentId = 0 SET @Status = 3;
+END;
+
+SELECT @Status AS Status, @ConfirmedEquipmentId AS ConfirmedEquipmentId;";
+
     /// <summary>Сведения SIM без PIN/PUK. Параметр: EquipmentId.</summary>
     public const string SELECT_SIMКарты_КодОборудования = @"
 SELECT S.КодОборудования, -- оборудование
@@ -1475,14 +2350,18 @@ SELECT PIN, -- PIN
 FROM vwSIMКарты
 WHERE КодОборудования = @EquipmentId";
 
-    /// <summary>Другая активная SIM с тем же номером. Параметры: EquipmentId, PhoneNumber.</summary>
-    public const string SELECT_SimКарты_Другая_С_Тем_Же_Номером = @"
-SELECT TOP 1 S.КодОборудования -- оборудование дубликата
+    private const string ACTIVE_SIM_Дубликаты = @"
 FROM vwSIMКарты S
 WHERE S.НомерТелефона = @PhoneNumber
   AND S.КодОборудования <> @EquipmentId
   AND EXISTS (SELECT 1 FROM vwОборудование E
               WHERE E.КодОборудования = S.КодОборудования AND E.Списано IS NULL)";
+
+    /// <summary>Другая активная SIM с тем же номером. Параметры: EquipmentId, PhoneNumber.</summary>
+    public const string SELECT_SimКарты_Другая_С_Тем_Же_Номером = "SELECT TOP 1 S.КодОборудования -- оборудование дубликата" + ACTIVE_SIM_Дубликаты;
+
+    /// <summary>Проверяет точный набор активных дубликатов под блокировкой транзакции записи.</summary>
+    internal const string SELECT_АктивныеДубликатыSIM = "SELECT S.КодОборудования -- оборудование дубликата" + ACTIVE_SIM_Дубликаты;
 
     /// <summary>Полный снимок одной SIM для отдельного чтения с проверенным правом на коды.</summary>
     public const string SELECT_SIMКарта_СнимокРедактора = @"
@@ -1667,6 +2546,10 @@ SELECT КодЛица -- идентификатор лица
 FROM Сотрудники
 WHERE КодСотрудника = @EmployeeId";
 
+    internal const string SELECT_SimPhoneForServiceReset = """
+        SELECT НомерТелефона FROM dbo.vwSIMКарты WHERE КодОборудования = @EquipmentId
+        """;
+
     /// <summary>Дополнительные услуги текущей SIM. Параметры: EquipmentId, ShowHistory, ShowRequired, BusinessToday.</summary>
     public const string SELECT_SIMКартыДопУслугиСотОператора_КодОборудования = @"
 SELECT U.КодSIMКартыДопУслугиСотОператора, -- идентификатор записи
@@ -1777,6 +2660,131 @@ BEGIN CATCH
     RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
 END CATCH;";
 
+    /// <summary>Сохраняет услугу актуальной SIM и подтверждает точный сохранённый ID в транзакции вызывающего кода.</summary>
+    internal const string UPDATE_SIMКартыДопУслугиСотОператораEnlisted = """
+DECLARE @Status int = 0;
+DECLARE @ConfirmedServiceId int = NULL;
+DECLARE @Affected int;
+DECLARE @SavedAt datetime = NULL;
+DECLARE @IsInsert bit = CASE WHEN ISNULL(@КодSIMКартыДопУслугиСотОператора, 0) = 0 THEN 1 ELSE 0 END;
+
+IF ISNULL(@НомерТелефона, '') = ''
+BEGIN
+    SELECT @НомерТелефона = НомерТелефона
+    FROM vwSIMКарты WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодОборудования = @КодОборудования;
+    IF @@ROWCOUNT <> 1 SET @Status = 1;
+END;
+
+IF @Status = 0 AND NOT EXISTS (
+    SELECT 1 FROM vwSIMКарты WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодОборудования = @КодОборудования AND НомерТелефона = @НомерТелефона
+)
+    SET @Status = 1;
+
+IF @Status = 0 AND EXISTS (
+    SELECT 1 FROM vwSIMКартыДопУслугиСотОператора WITH (UPDLOCK, HOLDLOCK)
+    WHERE КодТипаДопУслугиСотОператора = @КодТипаДопУслугиСотОператора
+      AND ДопУслугаСотОператора = @ДопУслугаСотОператора
+      AND НомерТелефона = @НомерТелефона
+      AND КодSIMКартыДопУслугиСотОператора <> ISNULL(@КодSIMКартыДопУслугиСотОператора, 0)
+      AND @От < ISNULL(До, '20500101')
+      AND От < ISNULL(@До, '20500101')
+)
+    SET @Status = 2;
+
+IF @Status = 0 AND @IsInsert = 0
+BEGIN
+    UPDATE vwSIMКартыДопУслугиСотОператора
+    SET От = @От, -- дата подключения
+        До = @До, -- эксклюзивная дата прекращения
+        КодТипаДопУслугиСотОператора = @КодТипаДопУслугиСотОператора, -- тип услуги
+        ДопУслугаСотОператора = @ДопУслугаСотОператора, -- название
+        СтоимостьВключения = @СтоимостьВключения, -- стоимость включения
+        СтоимостьВдень = @СтоимостьВдень, -- стоимость в день
+        СтоимостьВмесяц = @СтоимостьВмесяц -- стоимость в месяц
+    WHERE КодSIMКартыДопУслугиСотОператора = @КодSIMКартыДопУслугиСотОператора
+      AND НомерТелефона = @НомерТелефона
+      AND Изменено = @ИсходноеИзменено;
+    SET @Affected = @@ROWCOUNT;
+    IF @Affected = 1
+        SET @ConfirmedServiceId = @КодSIMКартыДопУслугиСотОператора;
+    ELSE
+        SET @Status = 3;
+END
+ELSE IF @Status = 0
+BEGIN
+    DECLARE @Before TABLE (ServiceId int NULL);
+    DECLARE @Added TABLE (ServiceId int NULL);
+
+    -- Блокируем диапазон всех услуг этого номера, включая пустой диапазон.
+    INSERT @Before (ServiceId)
+    SELECT КодSIMКартыДопУслугиСотОператора
+    FROM vwSIMКартыДопУслугиСотОператора WITH (UPDLOCK, HOLDLOCK)
+    WHERE НомерТелефона = @НомерТелефона;
+
+    SET @SavedAt = GETUTCDATE();
+    INSERT vwSIMКартыДопУслугиСотОператора (
+        НомерТелефона, -- номер телефона
+        КодТипаДопУслугиСотОператора, -- тип услуги
+        ДопУслугаСотОператора, -- название
+        От, -- дата подключения
+        До, -- эксклюзивная дата прекращения
+        СтоимостьВключения, -- стоимость включения
+        СтоимостьВдень, -- стоимость в день
+        СтоимостьВмесяц, -- стоимость в месяц
+        Сохранено -- время сохранения UTC
+    )
+    SELECT @НомерТелефона, @КодТипаДопУслугиСотОператора, @ДопУслугаСотОператора, @От, @До,
+           @СтоимостьВключения, @СтоимостьВдень, @СтоимостьВмесяц, @SavedAt
+    WHERE EXISTS (SELECT 1 FROM vwSIMКарты
+                  WHERE КодОборудования = @КодОборудования AND НомерТелефона = @НомерТелефона);
+    SET @Affected = @@ROWCOUNT;
+
+    IF @Affected <> 1
+        SET @Status = 4;
+    ELSE
+    BEGIN
+        INSERT @Added (ServiceId)
+        SELECT КодSIMКартыДопУслугиСотОператора
+        FROM vwSIMКартыДопУслугиСотОператора WITH (UPDLOCK, HOLDLOCK)
+        WHERE НомерТелефона = @НомерТелефона
+        EXCEPT SELECT ServiceId FROM @Before;
+
+        IF (SELECT COUNT(*) FROM @Added) <> 1 OR EXISTS (
+            SELECT 1 FROM @Before AS B WHERE NOT EXISTS (
+                SELECT 1 FROM vwSIMКартыДопУслугиСотОператора WITH (UPDLOCK, HOLDLOCK)
+                WHERE НомерТелефона = @НомерТелефона AND КодSIMКартыДопУслугиСотОператора = B.ServiceId))
+            SET @Status = 5;
+        ELSE
+            SELECT @ConfirmedServiceId = ServiceId FROM @Added;
+    END;
+END;
+
+-- Сначала получаем точный ID, затем проверяем все записанные значения с учётом NULL.
+IF @Status = 0
+   AND (@ConfirmedServiceId IS NULL OR @ConfirmedServiceId <= 0
+        OR NOT EXISTS (SELECT 1 FROM vwSIMКарты WITH (UPDLOCK, HOLDLOCK)
+                       WHERE КодОборудования = @КодОборудования AND НомерТелефона = @НомерТелефона)
+        OR (SELECT COUNT(*) FROM vwSIMКартыДопУслугиСотОператора WITH (UPDLOCK, HOLDLOCK)
+            WHERE КодSIMКартыДопУслугиСотОператора = @ConfirmedServiceId AND НомерТелефона = @НомерТелефона) <> 1
+        OR NOT EXISTS (
+            SELECT CONVERT(varbinary(max), CONVERT(nvarchar(max), КодТипаДопУслугиСотОператора)), DATALENGTH(CONVERT(nvarchar(max), КодТипаДопУслугиСотОператора)), CONVERT(varbinary(max), CONVERT(nvarchar(max), ДопУслугаСотОператора)), DATALENGTH(CONVERT(nvarchar(max), ДопУслугаСотОператора)),
+                   От, До, СтоимостьВключения, СтоимостьВдень, СтоимостьВмесяц
+            FROM vwSIMКартыДопУслугиСотОператора WITH (UPDLOCK, HOLDLOCK)
+            WHERE КодSIMКартыДопУслугиСотОператора = @ConfirmedServiceId
+              AND НомерТелефона = @НомерТелефона
+              AND (@IsInsert = 0 OR Сохранено = @SavedAt)
+            INTERSECT
+            SELECT CONVERT(varbinary(max), CONVERT(nvarchar(max), @КодТипаДопУслугиСотОператора)), DATALENGTH(CONVERT(nvarchar(max), @КодТипаДопУслугиСотОператора)), CONVERT(varbinary(max), CONVERT(nvarchar(max), @ДопУслугаСотОператора)), DATALENGTH(CONVERT(nvarchar(max), @ДопУслугаСотОператора)),
+                   @От, @До, @СтоимостьВключения, @СтоимостьВдень, @СтоимостьВмесяц
+        ))
+    SET @Status = 5;
+
+SELECT @Status AS Status, -- итог в транзакции вызывающего кода
+       CASE WHEN @Status = 0 THEN @ConfirmedServiceId END AS ConfirmedServiceId; -- доказанный ID услуги
+""";
+
     /// <summary>Лицензия оборудования. Параметр: EquipmentId.</summary>
     public const string SELECT_Soft_КодОборудования = @"
 SELECT S.КодОборудования, -- оборудование
@@ -1797,15 +2805,19 @@ INNER JOIN ТипыЛицензирования T ON S.КодТипаЛицен�
 LEFT JOIN Сотрудники CH ON S.Изменил = CH.КодСотрудника
 WHERE S.КодОборудования = @EquipmentId";
 
-    /// <summary>Типы лицензирования с пояснением.</summary>
-    public const string SELECT_ТипыЛицензирования = @"
+    private const string SELECT_ТипыЛицензирования_Поля = @"
 SELECT КодТипаЛицензирования, -- идентификатор
        ТипЛицензирования + ' (' + Компания + ')' AS Наименование, -- отображаемое название
        Описание, -- пояснение типа лицензии
        Временная, -- временная лицензия
        Перепродажа -- перепродажа
-FROM ТипыЛицензирования
-ORDER BY ТипЛицензирования, Компания";
+FROM ТипыЛицензирования";
+
+    /// <summary>Типы лицензирования с пояснением.</summary>
+    public const string SELECT_ТипыЛицензирования = SELECT_ТипыЛицензирования_Поля + "\nORDER BY ТипЛицензирования, Компания";
+
+    /// <summary>Проверяет действующие правила выбранного типа перед сохранением лицензии.</summary>
+    internal const string SELECT_ID_ТипЛицензирования = SELECT_ТипыЛицензирования_Поля + "\nWHERE КодТипаЛицензирования = @Id";
 
     /// <summary>Добавление новой или обновление исходной лицензии.</summary>
     public const string UPDATE_Soft = @"
@@ -1856,6 +2868,79 @@ BEGIN CATCH
     DECLARE @ErrorState int = ERROR_STATE();
     RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
 END CATCH;";
+
+    /// <summary>Добавляет или обновляет лицензию и подтверждает точную строку в транзакции вызывающего кода.</summary>
+    internal const string UPDATE_SoftEnlisted = """
+DECLARE @Affected int;
+
+IF @КодОборудования IS NULL OR @КодОборудования <= 0
+BEGIN
+    SELECT CAST(0 AS int) AS ConfirmedEquipmentId;
+    RETURN;
+END;
+
+IF @ОжидаетсяСуществующий = 1
+BEGIN
+    UPDATE vwSoft
+    SET КодТипаЛицензирования = @КодТипаЛицензирования, -- тип
+        НомерЛицензиата = @НомерЛицензиата, -- номер лицензиата
+        URLПроверкиЛицензии = @URLПроверкиЛицензии, -- URL проверки
+        КоличествоСерверов = @КоличествоСерверов, -- серверы
+        КоличествоКлиентов = @КоличествоКлиентов, -- клиенты
+        ДействуетОт = @ДействуетОт, -- начало
+        ДействуетДо = @ДействуетДо, -- эксклюзивное окончание
+        Дистрибутив = @Дистрибутив -- дистрибутив
+    WHERE КодОборудования = @КодОборудования
+      AND Изменено = @ИсходноеИзменено;
+    SET @Affected = @@ROWCOUNT;
+END
+ELSE
+BEGIN
+    IF EXISTS (SELECT 1 FROM vwSoft WITH (UPDLOCK, HOLDLOCK) WHERE КодОборудования = @КодОборудования)
+    BEGIN
+        SELECT CAST(0 AS int) AS ConfirmedEquipmentId;
+        RETURN;
+    END;
+
+    INSERT vwSoft (
+        КодОборудования, -- оборудование
+        КодТипаЛицензирования, -- тип
+        НомерЛицензиата, -- номер лицензиата
+        URLПроверкиЛицензии, -- URL проверки
+        КоличествоСерверов, -- серверы
+        КоличествоКлиентов, -- клиенты
+        ДействуетОт, -- начало
+        ДействуетДо, -- эксклюзивное окончание
+        Дистрибутив -- дистрибутив
+    )
+    VALUES (@КодОборудования, @КодТипаЛицензирования, @НомерЛицензиата, @URLПроверкиЛицензии,
+            @КоличествоСерверов, @КоличествоКлиентов, @ДействуетОт, @ДействуетДо, @Дистрибутив);
+    SET @Affected = @@ROWCOUNT;
+END;
+
+-- INTERSECT сравнивает nullable даты и количество, а текст проверяется побайтно.
+SELECT CASE WHEN @Affected = 1
+    AND (SELECT COUNT(*) FROM vwSoft WITH (UPDLOCK, HOLDLOCK) WHERE КодОборудования = @КодОборудования) = 1
+    AND EXISTS (
+        SELECT КодОборудования, КодТипаЛицензирования, КоличествоСерверов, КоличествоКлиентов, ДействуетОт, ДействуетДо,
+               CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), НомерЛицензиата), N'')),
+               DATALENGTH(ISNULL(CONVERT(nvarchar(max), НомерЛицензиата), N'')),
+               CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), URLПроверкиЛицензии), N'')),
+               DATALENGTH(ISNULL(CONVERT(nvarchar(max), URLПроверкиЛицензии), N'')),
+               CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), Дистрибутив), N'')),
+               DATALENGTH(ISNULL(CONVERT(nvarchar(max), Дистрибутив), N''))
+        FROM vwSoft WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодОборудования = @КодОборудования
+        INTERSECT
+        SELECT @КодОборудования, @КодТипаЛицензирования, @КоличествоСерверов, @КоличествоКлиентов, @ДействуетОт, @ДействуетДо,
+               CONVERT(varbinary(max), CONVERT(nvarchar(max), @НомерЛицензиата)),
+               DATALENGTH(CONVERT(nvarchar(max), @НомерЛицензиата)),
+               CONVERT(varbinary(max), CONVERT(nvarchar(max), @URLПроверкиЛицензии)),
+               DATALENGTH(CONVERT(nvarchar(max), @URLПроверкиЛицензии)),
+               CONVERT(varbinary(max), CONVERT(nvarchar(max), @Дистрибутив)),
+               DATALENGTH(CONVERT(nvarchar(max), @Дистрибутив))
+    ) THEN @КодОборудования ELSE 0 END AS ConfirmedEquipmentId;
+""";
 
     /// <summary>Установленное ПО оборудования. Параметр: EquipmentId.</summary>
     public const string SELECT_ПО_КодОборудования = @"
@@ -1919,10 +3004,74 @@ INSERT vwОборудованиеПО (
 VALUES (@КодОборудования, @КодПО, @От, CASE WHEN @До IS NOT NULL THEN DATEADD(day, 1, @До) ELSE NULL END,
         @Установлено, @Дистрибутив, @Примечания)";
 
-    /// <summary>Обновление исходной установки ПО без переноса на другое оборудование.</summary>
-    public const string UPDATE_ID_ОборудованиеПО = @"
-SET XACT_ABORT ON;
-BEGIN TRANSACTION;
+    private const string ОборудованиеПО_ПроверкаСохранённыхПолей = @"
+  AND U.КодПО = @КодПО -- выбранное ПО
+  AND U.От = @От -- дата установки
+  AND ((U.До IS NULL AND @До IS NULL) OR U.До = DATEADD(day, 1, @До)) -- эксклюзивная деинсталляция
+  AND EXISTS
+  (
+      -- Сравниваем точное содержимое и длину строк независимо от collation.
+      -- NULL в необязательном примечании эквивалентен пустому тексту формы.
+      SELECT CONVERT(varbinary(max), CONVERT(nvarchar(max), U.Установлено)), -- установленная версия
+             DATALENGTH(CONVERT(nvarchar(max), U.Установлено)), -- длина версии
+             CONVERT(varbinary(max), CONVERT(nvarchar(max), U.Дистрибутив)), -- дистрибутив
+             DATALENGTH(CONVERT(nvarchar(max), U.Дистрибутив)), -- длина дистрибутива
+             CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), U.Примечания), N'')), -- примечания
+             DATALENGTH(ISNULL(CONVERT(nvarchar(max), U.Примечания), N'')) -- длина примечаний
+      INTERSECT
+      SELECT CONVERT(varbinary(max), CONVERT(nvarchar(max), @Установлено)), -- ожидаемая версия
+             DATALENGTH(CONVERT(nvarchar(max), @Установлено)), -- длина ожидаемой версии
+             CONVERT(varbinary(max), CONVERT(nvarchar(max), @Дистрибутив)), -- ожидаемый дистрибутив
+             DATALENGTH(CONVERT(nvarchar(max), @Дистрибутив)), -- длина ожидаемого дистрибутива
+             CONVERT(varbinary(max), ISNULL(CONVERT(nvarchar(max), @Примечания), N'')), -- ожидаемые примечания
+             DATALENGTH(ISNULL(CONVERT(nvarchar(max), @Примечания), N'')) -- длина ожидаемых примечаний
+  )";
+
+    /// <summary>Добавляет установку в открытой транзакции и возвращает единственный новый сохранённый ключ.</summary>
+    internal const string INSERT_ОборудованиеПОEnlisted = @"
+SET NOCOUNT ON;
+DECLARE @BeforeSoftwareKeys TABLE (КодОборудованияПО int NOT NULL PRIMARY KEY);
+DECLARE @NewSoftwareKeys TABLE (КодОборудованияПО int NOT NULL);
+DECLARE @SavedSoftwareId int = 0;
+
+-- Фиксируем диапазон оборудования, включая случай отсутствия записей.
+INSERT INTO @BeforeSoftwareKeys (КодОборудованияПО) -- исходные ключи установок
+SELECT U.КодОборудованияПО -- ключ установки
+FROM dbo.vwОборудованиеПО AS U WITH (UPDLOCK, HOLDLOCK)
+WHERE U.КодОборудования = @КодОборудования
+OPTION (EXPAND VIEWS);
+" + INSERT_ОборудованиеПО + @";
+
+-- Результат берём из сохранённых строк представления после выполнения триггеров.
+INSERT INTO @NewSoftwareKeys (КодОборудованияПО) -- новые ключи установок
+SELECT U.КодОборудованияПО -- ключ установки
+FROM dbo.vwОборудованиеПО AS U WITH (UPDLOCK, HOLDLOCK)
+WHERE U.КодОборудования = @КодОборудования
+  AND NOT EXISTS
+      (SELECT 1 FROM @BeforeSoftwareKeys AS B WHERE B.КодОборудованияПО = U.КодОборудованияПО)
+OPTION (EXPAND VIEWS);
+
+IF (SELECT COUNT(*) FROM @NewSoftwareKeys) <> 1 OR EXISTS
+(
+    SELECT 1
+    FROM @BeforeSoftwareKeys AS B
+    WHERE NOT EXISTS
+        (SELECT 1 FROM dbo.vwОборудованиеПО AS U WITH (UPDLOCK, HOLDLOCK)
+         WHERE U.КодОборудования = @КодОборудования AND U.КодОборудованияПО = B.КодОборудованияПО)
+)
+BEGIN
+    SELECT CAST(0 AS int) AS ConfirmedInstallationId; -- количество новых ключей не подтверждено либо исчезла исходная запись
+    RETURN;
+END;
+
+SELECT @SavedSoftwareId = КодОборудованияПО FROM @NewSoftwareKeys; -- доказанный новый ключ
+SELECT CASE WHEN @SavedSoftwareId > 0 AND
+    (SELECT COUNT(*) FROM dbo.vwОборудованиеПО AS U WITH (UPDLOCK, HOLDLOCK)
+     WHERE U.КодОборудованияПО = @SavedSoftwareId AND U.КодОборудования = @КодОборудования" +
+        ОборудованиеПО_ПроверкаСохранённыхПолей + @") = 1
+    THEN @SavedSoftwareId ELSE 0 END AS ConfirmedInstallationId; -- точный подтверждённый ключ или отказ";
+
+    private const string UPDATE_ID_ОборудованиеПО_Поля = @"
 UPDATE vwОборудованиеПО
 SET КодПО = @КодПО, -- программное обеспечение
     От = @От, -- дата установки
@@ -1932,7 +3081,37 @@ SET КодПО = @КодПО, -- программное обеспечение
     Примечания = @Примечания -- примечания
 WHERE КодОборудованияПО = @КодОборудованияПО
   AND КодОборудования = @ИсходныйКодОборудования
-  AND Изменено = @ИсходноеИзменено;
+  AND Изменено = @ИсходноеИзменено;";
+
+    /// <summary>Обновляет неизменённую установку в открытой транзакции и возвращает исходный ключ после проверки.</summary>
+    internal const string UPDATE_ID_ОборудованиеПОEnlisted = @"
+SET NOCOUNT ON;
+IF @КодОборудованияПО <= 0 OR @КодОборудования <> @ИсходныйКодОборудования OR
+    (SELECT COUNT(*) FROM dbo.vwОборудованиеПО AS U WITH (UPDLOCK, HOLDLOCK)
+     WHERE U.КодОборудованияПО = @КодОборудованияПО
+       AND U.КодОборудования = @ИсходныйКодОборудования
+       AND U.Изменено = @ИсходноеИзменено) <> 1
+BEGIN
+    SELECT CAST(0 AS int) AS ConfirmedInstallationId; -- исходная запись изменилась, исчезла или не принадлежит оборудованию
+    RETURN;
+END;
+" + UPDATE_ID_ОборудованиеПО_Поля + @"
+IF @@ROWCOUNT <> 1
+BEGIN
+    SELECT CAST(0 AS int) AS ConfirmedInstallationId; -- условный UPDATE не подтвердил изменение ровно одной записи
+    RETURN;
+END;
+SELECT CASE WHEN
+    (SELECT COUNT(*) FROM dbo.vwОборудованиеПО AS U WITH (UPDLOCK, HOLDLOCK)
+     WHERE U.КодОборудованияПО = @КодОборудованияПО AND U.КодОборудования = @ИсходныйКодОборудования" +
+        ОборудованиеПО_ПроверкаСохранённыхПолей + @") = 1
+    THEN @КодОборудованияПО ELSE 0 END AS ConfirmedInstallationId; -- точный подтверждённый ключ или отказ";
+
+    /// <summary>Обновление исходной установки ПО без переноса на другое оборудование.</summary>
+    public const string UPDATE_ID_ОборудованиеПО = @"
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+" + UPDATE_ID_ОборудованиеПО_Поля + @"
 IF @@ROWCOUNT <> 1
 BEGIN
     ROLLBACK TRANSACTION;
@@ -2074,6 +3253,162 @@ BEGIN CATCH
     RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
 END CATCH;";
 
+    /// <summary>Добавляет запись учёта и возвращает точный сохранённый идентификатор и владельца.</summary>
+    internal const string INSERT_ОборудованиеБухУчетаEnlisted = """
+DECLARE @Status int = 0;
+DECLARE @ConfirmedAccountingId int = NULL;
+DECLARE @EffectiveOwnerId int = NULL;
+DECLARE @Inserted TABLE (AccountingId int NULL);
+
+INSERT ОборудованиеБухУчета (
+    КодОборудования,           -- оборудование
+    КодЛица,                   -- бухгалтерия-владелец
+    Материал,                  -- материал или основное средство
+    КодЛицаАрендатора,         -- арендатор
+    ИнвентарныйНомер,          -- инвентарный номер
+    От,                        -- дата поступления
+    КодДокументаПоступления,   -- документ поступления
+    До,                        -- дата списания
+    КодДокументаСписания,      -- документ списания
+    Примечания                 -- примечания
+)
+OUTPUT INSERTED.КодОборудованияБухУчета INTO @Inserted (AccountingId)
+VALUES (@КодОборудования, @КодЛица, @Материал, @КодЛицаАрендатора, @ИнвентарныйНомер,
+        @От, @КодДокументаПоступления, @До, @КодДокументаСписания, @Примечания);
+
+IF (SELECT COUNT(*) FROM @Inserted) <> 1
+    SET @Status = 5;
+ELSE
+BEGIN
+    SELECT @ConfirmedAccountingId = AccountingId FROM @Inserted;
+    IF @ConfirmedAccountingId IS NULL OR @ConfirmedAccountingId <= 0
+        SET @Status = 5;
+    ELSE
+    BEGIN
+        SELECT @EffectiveOwnerId = КодЛица
+        FROM ОборудованиеБухУчета WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодОборудованияБухУчета = @ConfirmedAccountingId
+          AND КодОборудования = @КодОборудования
+          AND КодЛица = @КодЛица;
+        IF @EffectiveOwnerId IS NULL SET @Status = 5;
+    END;
+END;
+
+SELECT @Status AS Status,                                 -- итог операции
+       CASE WHEN @Status = 0 THEN @ConfirmedAccountingId END AS ConfirmedAccountingId, -- сохранённая запись
+       CAST(NULL AS int) AS OriginalOwnerId,              -- до вставки строки не было
+       CASE WHEN @Status = 0 THEN @EffectiveOwnerId END AS EffectiveOwnerId; -- сохранённый владелец
+""";
+
+    /// <summary>Обновляет запись по исходной версии и правам обоих владельцев в транзакции вызывающего кода.</summary>
+    internal const string UPDATE_ID_ОборудованиеБухУчетаEnlisted = """
+DECLARE @Status int = 0;
+DECLARE @ActualEquipmentId int = NULL;
+DECLARE @ActualOwnerId int = NULL;
+DECLARE @ActualChangedAt datetime = NULL;
+DECLARE @EffectiveOwnerId int = NULL;
+
+SELECT @ActualEquipmentId = КодОборудования,
+       @ActualOwnerId = КодЛица,
+       @ActualChangedAt = Изменено
+FROM ОборудованиеБухУчета WITH (UPDLOCK, HOLDLOCK)
+WHERE КодОборудованияБухУчета = @КодОборудованияБухУчета;
+
+IF @ActualEquipmentId IS NULL OR @ActualEquipmentId <> @КодОборудования
+   OR @ActualChangedAt IS NULL OR @ExpectedChangedAt IS NULL OR @ActualChangedAt <> @ExpectedChangedAt
+    SET @Status = 1; -- запись отсутствует, перенесена или изменена
+ELSE IF @ActualOwnerId IS NULL OR ISNULL(dbo.fn_БухгалтерскийУчет(@ActualOwnerId), 0) <> 1
+    OR NOT EXISTS (SELECT 1 FROM fn_ТекущиеРоли()
+                   WHERE КодРоли IN (@RoleIdPrimary, @RoleIdSecondary)
+                     AND КодЛица IN (0, @ActualOwnerId))
+    SET @Status = 2; -- нет права по фактическому владельцу
+ELSE IF @КодЛица IS NULL OR ISNULL(dbo.fn_БухгалтерскийУчет(@КодЛица), 0) <> 1
+    OR NOT EXISTS (SELECT 1 FROM fn_ТекущиеРоли()
+                   WHERE КодРоли IN (@RoleIdPrimary, @RoleIdSecondary)
+                     AND КодЛица IN (0, @КодЛица))
+    SET @Status = 3; -- нет права по новому владельцу
+ELSE IF (@КодДокументаСписания IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM [Документы].dbo.vwДокументы WHERE КодДокумента = @КодДокументаСписания))
+     OR (@КодДокументаПоступления IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM [Документы].dbo.vwДокументы WHERE КодДокумента = @КодДокументаПоступления))
+    SET @Status = 4; -- документ недоступен текущему пользователю
+ELSE
+BEGIN
+    UPDATE ОборудованиеБухУчета
+    SET КодОборудования = @КодОборудования,                 -- оборудование
+        КодЛица = @КодЛица,                                 -- бухгалтерия-владелец
+        Материал = @Материал,                               -- материал или основное средство
+        КодЛицаАрендатора = @КодЛицаАрендатора,             -- арендатор
+        ИнвентарныйНомер = @ИнвентарныйНомер,               -- инвентарный номер
+        От = @От,                                           -- поступление
+        КодДокументаПоступления = @КодДокументаПоступления, -- документ поступления
+        До = @До,                                           -- списание
+        КодДокументаСписания = @КодДокументаСписания,       -- документ списания
+        Примечания = @Примечания                            -- примечания
+    WHERE КодОборудованияБухУчета = @КодОборудованияБухУчета;
+
+    IF @@ROWCOUNT <> 1
+        SET @Status = 5;
+    ELSE
+    BEGIN
+        SELECT @EffectiveOwnerId = КодЛица
+        FROM ОборудованиеБухУчета WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодОборудованияБухУчета = @КодОборудованияБухУчета
+          AND КодОборудования = @КодОборудования
+          AND КодЛица = @КодЛица;
+        IF @EffectiveOwnerId IS NULL SET @Status = 5;
+    END;
+END;
+
+SELECT @Status AS Status,                                                         -- итог операции
+       CASE WHEN @Status = 0 THEN @КодОборудованияБухУчета END AS ConfirmedAccountingId, -- обновлённая запись
+       CASE WHEN @Status = 0 THEN @ActualOwnerId END AS OriginalOwnerId,           -- владелец до обновления
+       CASE WHEN @Status = 0 THEN @EffectiveOwnerId END AS EffectiveOwnerId;       -- сохранённый владелец
+""";
+
+    /// <summary>Удаляет только выбранную последнюю запись и возвращает её ID и фактического владельца.</summary>
+    internal const string DELETE_КодОборудования_ОборудованиеБухУчетаEnlisted = """
+DECLARE @Status int = 0;
+DECLARE @LatestId int = NULL;
+DECLARE @ActualOwnerId int = NULL;
+DECLARE @Deleted TABLE (AccountingId int NOT NULL, OwnerId int NULL);
+
+SELECT TOP 1
+       @LatestId = КодОборудованияБухУчета,
+       @ActualOwnerId = КодЛица
+FROM ОборудованиеБухУчета WITH (UPDLOCK, HOLDLOCK)
+WHERE КодОборудования = @КодОборудования
+ORDER BY От DESC, КодОборудованияБухУчета DESC;
+
+IF @LatestId IS NULL
+    SET @Status = 1; -- история пуста
+ELSE IF @КодОборудованияБухУчета IS NULL OR @LatestId <> @КодОборудованияБухУчета
+    SET @Status = 2; -- подтверждённая запись устарела
+ELSE IF @ActualOwnerId IS NULL OR ISNULL(dbo.fn_БухгалтерскийУчет(@ActualOwnerId), 0) <> 1
+    OR NOT EXISTS (SELECT 1 FROM fn_ТекущиеРоли()
+                   WHERE КодРоли IN (@RoleIdPrimary, @RoleIdSecondary)
+                     AND КодЛица IN (0, @ActualOwnerId))
+    SET @Status = 3; -- нет права у актуального владельца
+ELSE
+BEGIN
+    DELETE ОборудованиеБухУчета
+    OUTPUT DELETED.КодОборудованияБухУчета, DELETED.КодЛица INTO @Deleted (AccountingId, OwnerId)
+    WHERE КодОборудованияБухУчета = @LatestId
+      AND КодОборудования = @КодОборудования;
+
+    IF (SELECT COUNT(*) FROM @Deleted) <> 1
+       OR NOT EXISTS (SELECT 1 FROM @Deleted WHERE AccountingId = @LatestId AND OwnerId = @ActualOwnerId)
+       OR EXISTS (SELECT 1 FROM ОборудованиеБухУчета WITH (UPDLOCK, HOLDLOCK)
+                  WHERE КодОборудованияБухУчета = @LatestId)
+        SET @Status = 5;
+END;
+
+SELECT @Status AS Status,                               -- итог операции
+       CASE WHEN @Status = 0 THEN @LatestId END AS ConfirmedAccountingId, -- точный удалённый ID
+       CASE WHEN @Status = 0 THEN @ActualOwnerId END AS OriginalOwnerId,  -- владелец удалённой записи
+       CAST(NULL AS int) AS EffectiveOwnerId;           -- после удаления строки нет
+""";
+
     /// <summary>Лица с бухгалтерским учётом. Параметры: Search, LimitPlusOne.</summary>
     public const string SELECT_ЛицаСБухгалтерскимУчетом = @"
 SELECT TOP (@LimitPlusOne)
@@ -2163,6 +3498,7 @@ ORDER BY Код";
     /// <summary>UPS, подключённые к серверу. Параметр: ServerEquipmentId.</summary>
     public const string SELECT_ID_vwПодключенияUPS = @"
 SELECT U.КодОборудованияUPS, -- идентификатор UPS
+       U.КодОборудованияСервера, -- исходный сервер связи
        T.ТипОборудования + ' ' + M.МодельОборудования
        + CASE WHEN E.SN <> '' THEN ' SN ' + E.SN ELSE '' END
        + CASE WHEN E.СетевоеИмя <> '' THEN ' ' + E.СетевоеИмя ELSE '' END
@@ -2220,6 +3556,69 @@ VALUES (@КодОборудованияUPS, @КодОборудованияСе�
 DELETE vwПодключенияUPS
 WHERE КодОборудованияUPS = @КодОборудованияUPS
   AND КодОборудованияСервера = @КодОборудованияСервера";
+
+    internal const string INSERT_СерверПодключенияUPSОборудованиеEnlisted = @"
+-- При ненулевом статусе вызывающая сторона откатывает транзакцию.
+-- Статус 1 означает конфликт связи, 3 означает результат без подтверждения.
+DECLARE @Status int = 0;
+DECLARE @ConfirmedEquipmentId int = 0;
+DECLARE @ExistingLinks bigint;
+
+SELECT @ExistingLinks = COUNT_BIG(*)
+FROM vwПодключенияUPS WITH (UPDLOCK, HOLDLOCK)
+WHERE КодОборудованияUPS = @КодОборудованияUPS
+      AND КодОборудованияСервера = @КодОборудованияСервера;
+
+IF @КодОборудованияUPS <= 0 OR @КодОборудованияСервера <= 0 OR @ExistingLinks <> 0
+    SET @Status = 1;
+ELSE
+BEGIN
+    INSERT vwПодключенияUPS (КодОборудованияUPS, КодОборудованияСервера, НастроеноВыключение)
+    VALUES (@КодОборудованияUPS, @КодОборудованияСервера, 0);
+
+    IF (SELECT COUNT_BIG(*) FROM vwПодключенияUPS WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодОборудованияUPS = @КодОборудованияUPS
+      AND КодОборудованияСервера = @КодОборудованияСервера) = 1
+        SELECT @ConfirmedEquipmentId = КодОборудованияСервера
+        FROM vwПодключенияUPS WITH (UPDLOCK, HOLDLOCK)
+        WHERE КодОборудованияUPS = @КодОборудованияUPS
+      AND КодОборудованияСервера = @КодОборудованияСервера
+          AND НастроеноВыключение = 0;
+
+    IF @ConfirmedEquipmentId = 0 SET @Status = 3;
+END;
+
+SELECT @Status AS Status, @ConfirmedEquipmentId AS ConfirmedEquipmentId;";
+
+    internal const string DELETE_СерверПодключенияUPSEnlisted = @"
+-- При ненулевом статусе вызывающая сторона откатывает транзакцию.
+-- Статус 1 означает конфликт связи, 3 означает результат без подтверждения.
+DECLARE @Status int = 0;
+DECLARE @ConfirmedEquipmentId int = 0;
+DECLARE @ExistingLinks bigint;
+
+SELECT @ExistingLinks = COUNT_BIG(*)
+FROM vwПодключенияUPS WITH (UPDLOCK, HOLDLOCK)
+WHERE КодОборудованияUPS = @КодОборудованияUPS
+      AND КодОборудованияСервера = @КодОборудованияСервера;
+
+IF @КодОборудованияUPS <= 0 OR @КодОборудованияСервера <= 0 OR @ExistingLinks <> 1
+    SET @Status = 1;
+ELSE
+BEGIN
+    DELETE vwПодключенияUPS
+    WHERE КодОборудованияUPS = @КодОборудованияUPS
+      AND КодОборудованияСервера = @КодОборудованияСервера;
+
+    IF NOT EXISTS (SELECT 1 FROM vwПодключенияUPS WITH (UPDLOCK, HOLDLOCK)
+                   WHERE КодОборудованияUPS = @КодОборудованияUPS
+      AND КодОборудованияСервера = @КодОборудованияСервера)
+        SET @ConfirmedEquipmentId = @КодОборудованияСервера;
+
+    IF @ConfirmedEquipmentId = 0 SET @Status = 3;
+END;
+
+SELECT @Status AS Status, @ConfirmedEquipmentId AS ConfirmedEquipmentId;";
 
     /// <summary>Оборудование для связи UPS. Параметры: UpsOnly, LocationId, Search, LimitPlusOne.</summary>
     public const string SELECT_ОборудованиеДляUPS = @"
@@ -2360,18 +3759,35 @@ BEGIN
     RETURN;
 END;";
 
-    /// <summary>Проверяет исходную версию телефона и удерживает блокировку до конца текущей транзакции.</summary>
-    public const string CHECK_ТелефонИсходнаяВерсияДляСохранения = @"
+    private const string CHECK_ТелефонИсходнаяВерсия = @"
 IF NOT EXISTS (
     SELECT 1
     FROM vwТелефонныеНомераИзменение WITH (UPDLOCK, HOLDLOCK)
     WHERE КодТелефонногоНомера = @Id
       AND Изменено = @ExpectedChangedAt
-)" + ROLLBACK_ТелефонКонфликтВерсии;
+)";
+
+    /// <summary>Проверяет исходную версию телефона в пакете, владеющем своей транзакцией.</summary>
+    public const string CHECK_ТелефонИсходнаяВерсияДляСохранения =
+        CHECK_ТелефонИсходнаяВерсия + ROLLBACK_ТелефонКонфликтВерсии;
+
+    private const string RETURN_ТелефонКонфликтВерсии = @"
+BEGIN
+    SELECT @VersionConflictStatus; -- Откат выполняет владелец транзакции
+    RETURN;
+END;";
+
+    /// <summary>Проверяет исходную версию телефона внутри транзакции вызывающего кода.</summary>
+    public const string CHECK_ТелефонИсходнаяВерсияДляСохраненияEnlisted =
+        CHECK_ТелефонИсходнаяВерсия + RETURN_ТелефонКонфликтВерсии;
 
     /// <summary>Отменяет основной UPDATE и изменения связей, если UPDATE не изменил ровно одну строку.</summary>
     public const string CHECK_ТелефонОбновленаОднаСтрока = @"
 IF @@ROWCOUNT <> 1" + ROLLBACK_ТелефонКонфликтВерсии;
+
+    /// <summary>Возвращает конфликт при отсутствии ровно одной изменённой строки без управления транзакцией.</summary>
+    public const string CHECK_ТелефонОбновленаОднаСтрокаEnlisted = @"
+IF @@ROWCOUNT <> 1" + RETURN_ТелефонКонфликтВерсии;
 
     /// <summary>Обновление 20 полей телефона. Параметры соответствуют PhoneSaveBuilder.</summary>
     public const string UPDATE_ТелефонДляФормы = @"
@@ -3153,17 +4569,14 @@ WHERE КодРозетки = @Id";
 
     /// <summary>Обычное атомарное обновление порта с защитой от устаревшей записи.</summary>
     public const string UPDATE_ЛокальнаяСеть = @"
-SET NOCOUNT ON;
-BEGIN TRY
-    BEGIN TRANSACTION;
     DECLARE @SourceChanged datetime;
     SELECT @SourceChanged = Изменено
     FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
     WHERE КодЛокальнойСети = @Id;
-    IF @SourceChanged IS NULL OR @SourceChanged <> @ExpectedChangedAt
-    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- запись недоступна или устарела
+    IF @SourceChanged IS NULL OR @ExpectedChangedAt IS NULL OR @SourceChanged <> @ExpectedChangedAt
+    BEGIN SELECT 1; RETURN; END; -- запись недоступна или устарела
     IF NOT EXISTS (SELECT 1 FROM ЛицаЗаказчики WHERE КодЛица = @PersonCustomerId)
-    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- заказчик не существует
+    BEGIN SELECT 2; RETURN; END; -- заказчик не существует
     UPDATE vwЛокальнаяСеть
     SET КодРозетки = @SocketId,
         КодЛицаЗаказчика = @PersonCustomerId,
@@ -3172,37 +4585,28 @@ BEGIN TRY
         Примечания = @Description,
         СрокВозврата = @ReturnDate
     WHERE КодЛокальнойСети = @Id;
-    COMMIT TRANSACTION;
-    SELECT 0; -- успех
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
-    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
-    DECLARE @ErrorState int = ERROR_STATE();
-    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
-END CATCH;";
+    SELECT 0; -- успех";
 
     /// <summary>Атомарное переключение на свободный соседний порт; сроки возврата обеих записей не меняются.</summary>
     public const string SWITCH_ЛокальнаяСеть = @"
-SET NOCOUNT ON;
-BEGIN TRY
-    BEGIN TRANSACTION;
     DECLARE @SourceChanged datetime;
     DECLARE @TargetFree bit;
+    DECLARE @TargetChanged datetime;
     SELECT @SourceChanged = Изменено
     FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
     WHERE КодЛокальнойСети = @Id;
-    SELECT @TargetFree = CASE WHEN КодРозетки IS NULL AND КодСотрудника IS NULL AND Подключено = '' THEN 1 ELSE 0 END
+    SELECT @TargetFree = CASE WHEN КодРозетки IS NULL AND КодСотрудника IS NULL AND Подключено = '' THEN 1 ELSE 0 END,
+           @TargetChanged = Изменено
     FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
     WHERE КодЛокальнойСети = @TargetId;
-    IF @SourceChanged IS NULL OR @SourceChanged <> @ExpectedChangedAt
-    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- источник недоступен или устарел
+    IF @SourceChanged IS NULL OR @ExpectedChangedAt IS NULL OR @SourceChanged <> @ExpectedChangedAt
+    BEGIN SELECT 1; RETURN; END; -- источник недоступен или устарел
     IF NOT EXISTS (SELECT 1 FROM ЛицаЗаказчики WHERE КодЛица = @PersonCustomerId)
-    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- заказчик не существует
-    IF @TargetFree <> 1 OR @TargetId = @Id OR NOT EXISTS (
+    BEGIN SELECT 2; RETURN; END; -- заказчик не существует
+    IF @TargetFree IS NULL OR @TargetFree <> 1 OR @TargetChanged IS NULL OR
+        @ExpectedTargetChangedAt IS NULL OR @TargetChanged <> @ExpectedTargetChangedAt OR @TargetId = @Id OR NOT EXISTS (
         SELECT 1 FROM dbo.fn_ЛокальнаяСеть_СоседниеПорты(@Id) WHERE КодЛокальнойСети = @TargetId)
-    BEGIN ROLLBACK TRANSACTION; SELECT 3; RETURN; END; -- цель не является свободным соседним портом
+    BEGIN SELECT 3; RETURN; END; -- цель не является свободным соседним портом
     UPDATE vwЛокальнаяСеть
     SET КодЛицаЗаказчика = @PersonCustomerId, Примечания = '', Подключено = '', КодСотрудника = NULL, КодРозетки = NULL
     WHERE КодЛокальнойСети = @Id;
@@ -3210,24 +4614,13 @@ BEGIN TRY
     SET КодЛицаЗаказчика = @PersonCustomerId, Примечания = @Description, Подключено = @Connected,
         КодСотрудника = @EmployeeId, КодРозетки = @SocketId
     WHERE КодЛокальнойСети = @TargetId;
-    COMMIT TRANSACTION;
-    SELECT 0; -- успех
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
-    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
-    DECLARE @ErrorState int = ERROR_STATE();
-    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
-END CATCH;";
+    SELECT 0; -- успех";
 
     /// <summary>Атомарный обмен двух соседних портов с временным освобождением розетки источника; сроки возврата не меняются.</summary>
     public const string EXCHANGE_ЛокальнаяСеть = @"
-SET NOCOUNT ON;
-BEGIN TRY
-    BEGIN TRANSACTION;
     DECLARE @SourceChanged datetime;
     DECLARE @TargetCustomerId int;
+    DECLARE @TargetChanged datetime;
     DECLARE @TargetDescription varchar(max);
     DECLARE @TargetConnected varchar(max);
     DECLARE @TargetEmployeeId int;
@@ -3239,16 +4632,18 @@ BEGIN TRY
            @TargetDescription = Примечания,
            @TargetConnected = Подключено,
            @TargetEmployeeId = КодСотрудника,
-           @TargetSocketId = КодРозетки
+           @TargetSocketId = КодРозетки,
+           @TargetChanged = Изменено
     FROM vwЛокальнаяСеть WITH (UPDLOCK, HOLDLOCK)
     WHERE КодЛокальнойСети = @TargetId;
-    IF @SourceChanged IS NULL OR @SourceChanged <> @ExpectedChangedAt
-    BEGIN ROLLBACK TRANSACTION; SELECT 1; RETURN; END; -- источник недоступен или устарел
+    IF @SourceChanged IS NULL OR @ExpectedChangedAt IS NULL OR @SourceChanged <> @ExpectedChangedAt
+    BEGIN SELECT 1; RETURN; END; -- источник недоступен или устарел
     IF NOT EXISTS (SELECT 1 FROM ЛицаЗаказчики WHERE КодЛица = @PersonCustomerId)
-    BEGIN ROLLBACK TRANSACTION; SELECT 2; RETURN; END; -- заказчик не существует
-    IF @TargetCustomerId IS NULL OR @TargetId = @Id OR NOT EXISTS (
+    BEGIN SELECT 2; RETURN; END; -- заказчик не существует
+    IF @TargetCustomerId IS NULL OR @TargetChanged IS NULL OR @ExpectedTargetChangedAt IS NULL OR
+        @TargetChanged <> @ExpectedTargetChangedAt OR @TargetId = @Id OR NOT EXISTS (
         SELECT 1 FROM dbo.fn_ЛокальнаяСеть_СоседниеПорты(@Id) WHERE КодЛокальнойСети = @TargetId)
-    BEGIN ROLLBACK TRANSACTION; SELECT 3; RETURN; END; -- цель не является соседним портом
+    BEGIN SELECT 3; RETURN; END; -- цель не является соседним портом
     UPDATE vwЛокальнаяСеть
     SET КодЛицаЗаказчика = @TargetCustomerId, Примечания = @TargetDescription, Подключено = @TargetConnected,
         КодСотрудника = @TargetEmployeeId, КодРозетки = NULL
@@ -3260,16 +4655,7 @@ BEGIN TRY
     UPDATE vwЛокальнаяСеть
     SET КодРозетки = @TargetSocketId
     WHERE КодЛокальнойСети = @Id;
-    COMMIT TRANSACTION;
-    SELECT 0; -- успех
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();
-    DECLARE @ErrorSeverity int = ERROR_SEVERITY();
-    DECLARE @ErrorState int = ERROR_STATE();
-    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
-END CATCH;";
+    SELECT 0; -- успех";
 
     /// <summary>Проверка актуального PoE-порта и вызов legacy-процедуры. Параметр: КодЛокальнойСети; timeout 120 секунд.</summary>
     public const string EXEC_ResetPoEport = @"

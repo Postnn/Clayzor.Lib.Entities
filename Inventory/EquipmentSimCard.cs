@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
 using System.Data.Common;
+using System.Data.SqlTypes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -10,6 +11,8 @@ using System.Text.RegularExpressions;
 using Clayzor.Lib.DALC;
 
 namespace Clayzor.Lib.Entities.Inventory;
+
+internal sealed class EquipmentSimWriteRejectedException(string message) : InvalidOperationException(message);
 
 /// <summary>Сведения SIM-карты без секретных кодов.</summary>
 public sealed class EquipmentSimCard
@@ -151,17 +154,24 @@ public sealed class EquipmentSimCard
     {
         var row = await RunProtectedAsync(db, connection => connection.QuerySingleOrDefaultAsync<EditorRow>(
             SQLQueries.SELECT_SIMКарта_СнимокРедактора, new { EquipmentId = equipmentId }), write: false);
+        var snapshot = MaterializeSnapshot(row);
+        if (snapshot is not null)
+            snapshot.EditorVersion = snapshot.CaptureVersion();
+        return snapshot;
+    }
+
+    private static EquipmentSimCard? MaterializeSnapshot(EditorRow? row)
+    {
         if (row is null)
             return null;
-        var snapshot = new EquipmentSimCard
+        return new EquipmentSimCard
         {
             EquipmentId = row.EquipmentId, PhoneNumber = row.PhoneNumber, ActivatedAtUtc = row.ActivatedAtUtc,
             ContractId = row.ContractId, PersonalDataPersonId = row.PersonalDataPersonId,
             ChangedById = row.ChangedById, ChangedAt = row.ChangedAt,
-            Secrets = new EquipmentSimSecrets { Pin = row.Pin, Pin2 = row.Pin2, Puk = row.Puk, Puk2 = row.Puk2 },
+            Secrets = new EquipmentSimSecrets { Pin = row.Pin ?? string.Empty, Pin2 = row.Pin2 ?? string.Empty,
+                Puk = row.Puk ?? string.Empty, Puk2 = row.Puk2 ?? string.Empty },
         };
-        snapshot.EditorVersion = snapshot.CaptureVersion();
-        return snapshot;
     }
 
     /// <summary>Добавляет отсутствующую либо обновляет неизменённую SIM, атомарно списывая подтверждённый дубликат.</summary>
@@ -182,6 +192,92 @@ public sealed class EquipmentSimCard
         var original = await ReadExpectedAsync(db, equipmentId, expectedVersion);
         await ExecuteWriteAsync(db, EquipmentSimSaveBuilder.BuildDelete(original));
     }
+
+    internal async Task<int> SaveEnlistedAsync(DbConnection connection, DbTransaction transaction, EquipmentSimWriteMode mode,
+        string? expectedVersion, int? duplicateEquipmentId, CancellationToken ct)
+    {
+        EquipmentSimCard? original = mode switch
+        {
+            EquipmentSimWriteMode.Add when expectedVersion is null => null,
+            EquipmentSimWriteMode.Edit => await RequireEnlistedSnapshotAsync(connection, transaction, EquipmentId, expectedVersion, ct),
+            _ => throw SimWriteConflict(),
+        };
+        var personalDataPerson = PersonalDataPersonId;
+        if (duplicateEquipmentId is int duplicateId)
+        {
+            var duplicate = await ReadEnlistedSnapshotAsync(connection, transaction, duplicateId, ct);
+            if (duplicate is null || duplicate.EquipmentId != duplicateId)
+                throw SimWriteConflict();
+            personalDataPerson ??= duplicate.PersonalDataPersonId;
+        }
+
+        await RunEnlistedWriteAsync(connection, transaction,
+            EquipmentSimSaveBuilder.BuildSave(this, mode, original, duplicateEquipmentId, enlisted: true), ct);
+        var saved = await ReadEnlistedSnapshotAsync(connection, transaction, EquipmentId, ct);
+        var activated = new SqlDateTime(ActivatedAtUtc).Value;
+        if (saved is null || saved.EquipmentId != EquipmentId || saved.PhoneNumber != PhoneNumber ||
+            saved.ActivatedAtUtc != activated || saved.ContractId != ContractId || saved.PersonalDataPersonId != personalDataPerson ||
+            saved.Secrets.Pin != (Secrets.Pin ?? string.Empty) || saved.Secrets.Pin2 != (Secrets.Pin2 ?? string.Empty) ||
+            saved.Secrets.Puk != (Secrets.Puk ?? string.Empty) || saved.Secrets.Puk2 != (Secrets.Puk2 ?? string.Empty))
+            throw SimWriteConflict();
+
+        if (duplicateEquipmentId is int retiredId)
+        {
+            var retired = await connection.QuerySingleOrDefaultAsync<Equipment>(new CommandDefinition(
+                SQLQueries.SELECT_ID_Оборудование, new { Id = retiredId }, transaction, cancellationToken: ct));
+            if (retired?.Id != retiredId || retired.WriteOffAtUtc != activated)
+                throw SimWriteConflict();
+        }
+        return EquipmentId;
+    }
+
+    internal static async Task<int> DeleteEnlistedAsync(DbConnection connection, DbTransaction transaction,
+        int equipmentId, string? expectedVersion, CancellationToken ct)
+    {
+        var original = await RequireEnlistedSnapshotAsync(connection, transaction, equipmentId, expectedVersion, ct);
+        await RunEnlistedWriteAsync(connection, transaction, EquipmentSimSaveBuilder.BuildDelete(original, enlisted: true), ct);
+        if (await ReadEnlistedSnapshotAsync(connection, transaction, equipmentId, ct) is not null)
+            throw SimWriteConflict();
+        return equipmentId;
+    }
+
+    private static async Task<EquipmentSimCard> RequireEnlistedSnapshotAsync(DbConnection connection, DbTransaction transaction,
+        int equipmentId, string? expectedVersion, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(expectedVersion)) throw SimWriteConflict();
+        var actual = await ReadEnlistedSnapshotAsync(connection, transaction, equipmentId, ct);
+        if (actual?.EquipmentId != equipmentId || !string.Equals(expectedVersion, actual.CaptureVersion(), StringComparison.Ordinal))
+            throw SimWriteConflict();
+        return actual;
+    }
+
+    internal static async Task<EquipmentSimCard?> ReadEditorSnapshotAsync(
+        DbConnection connection, int equipmentId, CancellationToken ct)
+    {
+        var snapshot = await ReadEnlistedSnapshotAsync(connection, null, equipmentId, ct);
+        if (snapshot is not null)
+            snapshot.EditorVersion = snapshot.CaptureVersion();
+        return snapshot;
+    }
+
+    private static async Task<EquipmentSimCard?> ReadEnlistedSnapshotAsync(DbConnection connection, DbTransaction? transaction,
+        int equipmentId, CancellationToken ct) => MaterializeSnapshot(await connection.QuerySingleOrDefaultAsync<EditorRow>(
+        new CommandDefinition(SQLQueries.SELECT_SIMКарта_СнимокРедактора, new { EquipmentId = equipmentId }, transaction,
+            commandType: CommandType.Text, cancellationToken: ct)));
+
+    private static async Task RunEnlistedWriteAsync(DbConnection connection, DbTransaction transaction,
+        EquipmentPhoneSaveCommand command, CancellationToken ct)
+    {
+        var status = await connection.ExecuteScalarAsync<int?>(new CommandDefinition(command.Sql, command.Parameters, transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
+        if (status == -1)
+            throw new EquipmentSimWriteRejectedException("Дубликат SIM изменился или уже списан. Сверьте актуальные данные.");
+        if (status == 0) throw SimWriteConflict();
+        if (status != 1) throw new InvalidOperationException("База не подтвердила результат операции SIM.");
+    }
+
+    private static EquipmentSimWriteRejectedException SimWriteConflict() =>
+        new("Исходное состояние или результат SIM не подтверждены. Сверьте актуальные данные.");
 
     private static async Task<EquipmentSimCard> ReadExpectedAsync(DbManager db, int equipmentId, string? expectedVersion)
     {

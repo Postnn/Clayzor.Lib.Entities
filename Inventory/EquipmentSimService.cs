@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -118,12 +120,42 @@ public sealed class EquipmentSimService
     }
 
     /// <summary>Добавляет услугу или обновляет её по идентификатору.</summary>
-    public Task SaveAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_SIMКартыДопУслугиСотОператора, new
+    public Task SaveAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_SIMКартыДопУслугиСотОператора,
+        WriteParameters(), commandType: CommandType.Text);
+
+    internal async Task<int> SaveEnlistedAsync(DbConnection connection, DbTransaction transaction, CancellationToken ct)
+    {
+        var proof = await connection.QuerySingleOrDefaultAsync<SimServiceWriteProof>(new CommandDefinition(
+            SQLQueries.UPDATE_SIMКартыДопУслугиСотОператораEnlisted, WriteParameters(), transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
+        var rejection = proof?.Status switch
+        {
+            1 => "Привязка SIM изменилась. Обновите данные.",
+            2 => "Период пересекается с существующей дополнительной услугой.",
+            3 => "Дополнительная услуга изменилась. Обновите данные.",
+            4 or 5 => "База не подтвердила сохранение дополнительной услуги.",
+            _ => null,
+        };
+        if (rejection is not null) throw new EquipmentSimWriteRejectedException(rejection);
+        if (proof is not { Status: 0, ConfirmedServiceId: > 0 } || Id > 0 && proof.ConfirmedServiceId != Id)
+            throw new InvalidOperationException("База не подтвердила точный ключ дополнительной услуги SIM.");
+        return proof.ConfirmedServiceId.Value;
+    }
+
+    private sealed class SimServiceWriteProof
+    {
+        /// <summary>Именованный статус сохранения дополнительной услуги.</summary>
+        public int? Status { get; set; }
+        /// <summary>Подтверждённый сервером код дополнительной услуги.</summary>
+        public int? ConfirmedServiceId { get; set; }
+    }
+
+    private object WriteParameters() => new
     {
         КодОборудования = EquipmentId,
         НомерТелефона = PhoneNumber,
         КодSIMКартыДопУслугиСотОператора = Id == 0 ? (int?)null : Id,
-        ИсходноеИзменено = ChangedAt,
+        ИсходноеИзменено = Id == 0 ? (DateTime?)null : ChangedAt,
         КодТипаДопУслугиСотОператора = ServiceTypeId,
         ДопУслугаСотОператора = ServiceName,
         От = DateFrom?.Date,
@@ -131,5 +163,5 @@ public sealed class EquipmentSimService
         СтоимостьВключения = ActivationCost,
         СтоимостьВдень = DailyCost,
         СтоимостьВмесяц = MonthlyCost,
-    }, commandType: CommandType.Text);
+    };
 }

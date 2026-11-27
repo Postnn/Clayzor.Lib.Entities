@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Clayzor.Lib.Web.Controls.Tests" />
+    <InternalsVisibleTo Include="Kesco.App.Web.Inventory" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.*" />

@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
 
 namespace Clayzor.Lib.Entities.Inventory;
@@ -48,30 +49,37 @@ public sealed class EquipmentResponsiblePeriod
     public DateTime ChangedAtUtc { get; set; }
 
     /// <summary>Добавляет нового ответственного.</summary>
-    public Task InsertAsync(DbManager db) => db.ExecuteAsync(SQLQueries.INSERT_ОборудованиеСотрудников, new
-    {
-        КодОборудования = EquipmentId,
-        От = FromUtc,
-        КодСотрудника = EmployeeId,
-        СрокВозврата = ReturnDate,
-        Примечания = Notes ?? string.Empty,
-    }, commandType: CommandType.Text);
+    public Task InsertAsync(DbManager db) => db.ExecuteAsync(SQLQueries.INSERT_ОборудованиеСотрудников,
+        WriteParameters(FromUtc), commandType: CommandType.Text);
 
     /// <summary>Обновляет только срок возврата и примечания существующего периода.</summary>
     public async Task UpdateAsync(DbManager db)
     {
-        var affectedRows = await db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеСотрудников, new
-        {
-            КодОборудования = EquipmentId,
-            От = FromUtc,
-            ИсходноеИзменено = ChangedAtUtc,
-            СрокВозврата = ReturnDate,
-            Примечания = Notes ?? string.Empty,
-        }, commandType: CommandType.Text);
+        var affectedRows = await db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеСотрудников,
+            WriteParameters(FromUtc), commandType: CommandType.Text);
         if (affectedRows != 1)
             throw new InvalidOperationException(
                 "Период ответственности был изменён или удалён другим пользователем. Обновите данные и повторите операцию.");
     }
+
+    internal Task<int> IssueEnlistedAsync(DbConnection connection, DbTransaction transaction, DateTime fromUtc, CancellationToken ct) =>
+        EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, SQLQueries.INSERT_ОборудованиеСотрудниковEnlisted,
+            WriteParameters(fromUtc), EquipmentId, ct);
+
+    internal Task<int> UpdateEnlistedAsync(DbConnection connection, DbTransaction transaction, DateTime fromUtc, CancellationToken ct) =>
+        EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, SQLQueries.UPDATE_ОборудованиеСотрудниковEnlisted,
+            WriteParameters(fromUtc), EquipmentId, ct);
+
+    private object WriteParameters(DateTime fromUtc) => new
+    {
+        КодОборудования = EquipmentId,
+        КодСотрудника = EmployeeId,
+        От = fromUtc,
+        ИсходноеИзменено = ChangedAtUtc,
+        ИсходноеДо = ToUtc,
+        СрокВозврата = ReturnDate,
+        Примечания = Notes ?? string.Empty,
+    };
 
     /// <summary>Атомарно закрывает период, добавляет новое расположение и следующего ответственного.</summary>
     public Task WithdrawAsync(DbManager db, EquipmentResponsiblePeriod? next, EquipmentLocationPeriod? location)
