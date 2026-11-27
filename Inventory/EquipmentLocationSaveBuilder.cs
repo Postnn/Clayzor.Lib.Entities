@@ -59,6 +59,84 @@ public static class EquipmentLocationSaveBuilder
         return new EquipmentPhoneSaveCommand(sql.ToString(), parameters);
     }
 
+    internal static EquipmentPhoneSaveCommand BuildAddEnlisted(
+        EquipmentLocationPeriod location,
+        EquipmentResponsiblePeriod? responsible,
+        bool expectedActiveResponsible,
+        IReadOnlyList<int> simIds)
+    {
+        Validate(location, responsible);
+        var parameters = new DynamicParameters();
+        parameters.Add("@КодОборудования", location.EquipmentId, DbType.Int32);
+        parameters.Add("@От", location.FromUtc, DbType.DateTime);
+        parameters.Add("@КодРасположения", location.LocationId, DbType.Int32);
+        parameters.Add("@СрокВозврата", location.ReturnDate, DbType.DateTime);
+        parameters.Add("@Примечания", location.Notes ?? string.Empty, DbType.String, size: 300);
+        parameters.Add("@КодСотрудника", responsible?.EmployeeId, DbType.Int32);
+        parameters.Add("@РасположениеНаРуках", (int)Расположения.На_руках, DbType.Int32);
+        parameters.Add("@ОжидаетсяДействующийОтветственный", expectedActiveResponsible ? 1 : 0, DbType.Int32);
+
+        var sql = new StringBuilder();
+        EquipmentLocationEnlistedSql.AppendPlan(sql, parameters, simIds);
+        sql.AppendLine("""
+            DECLARE @ДействующихОтветственных int;
+            SELECT @ДействующихОтветственных = COUNT(*)
+            FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+            WHERE КодОборудования = @КодОборудования AND До IS NULL;
+            IF @ДействующихОтветственных <> @ОжидаетсяДействующийОтветственный
+            BEGIN
+                SELECT 4 AS Status, 0 AS ConfirmedEquipmentId;
+                RETURN;
+            END;
+            IF @КодРасположения = @РасположениеНаРуках AND @ДействующихОтветственных = 0 AND @КодСотрудника IS NULL
+            BEGIN
+                SELECT 5 AS Status, 0 AS ConfirmedEquipmentId;
+                RETURN;
+            END;
+            IF @КодРасположения = @РасположениеНаРуках AND @ДействующихОтветственных > 0 AND @КодСотрудника IS NOT NULL
+            BEGIN
+                SELECT 6 AS Status, 0 AS ConfirmedEquipmentId;
+                RETURN;
+            END;
+            """);
+        sql.AppendLine(SQLQueries.INSERT_ОборудованиеРасположениеEnlisted);
+        if (responsible is not null)
+        {
+            sql.AppendLine("""
+                IF EXISTS (SELECT 1 FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+                           WHERE КодОборудования = @КодОборудования AND От = @От)
+                BEGIN
+                    SELECT 7 AS Status, 0 AS ConfirmedEquipmentId;
+                    RETURN;
+                END;
+                """);
+            sql.AppendLine(SQLQueries.INSERT_ОборудованиеСотрудникаИзРасположения);
+            sql.AppendLine("""
+                IF @@ROWCOUNT <> 1
+                BEGIN
+                    SELECT 3 AS Status, 0 AS ConfirmedEquipmentId;
+                    RETURN;
+                END;
+                IF (SELECT COUNT(*) FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+                    WHERE КодОборудования = @КодОборудования AND От = @От) <> 1
+                   OR NOT EXISTS (
+                       SELECT 1 FROM ОборудованиеСотрудников WITH (UPDLOCK, HOLDLOCK)
+                       WHERE КодОборудования = @КодОборудования AND От = @От
+                         AND КодСотрудника = @КодСотрудника AND До IS NULL AND СрокВозврата IS NULL
+                         AND DATALENGTH(ISNULL(CONVERT(nvarchar(max), Примечания), N'')) = 0
+                   )
+                BEGIN
+                    SELECT 3 AS Status, 0 AS ConfirmedEquipmentId;
+                    RETURN;
+                END;
+                """);
+        }
+
+        sql.AppendLine(SQLQueries.CHECK_ОборудованиеРасположениеEnlisted);
+        sql.AppendLine("SELECT 0 AS Status, @КодОборудования AS ConfirmedEquipmentId;");
+        return new EquipmentPhoneSaveCommand(sql.ToString(), parameters);
+    }
+
     private static void Validate(EquipmentLocationPeriod location, EquipmentResponsiblePeriod? responsible)
     {
         if (location.EquipmentId <= 0 || location.LocationId <= 0)

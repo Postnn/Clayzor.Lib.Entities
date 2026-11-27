@@ -38,85 +38,169 @@ public static class DutyData
         db.RunDbAsync(async connection => (IReadOnlyList<DutyEngineer>)
             (await FindEngineersAsync(connection, null, date, text, id, limit, ct)).AsList());
 
-    /// <summary>Пишет план либо факт под свежей идентичностью и актуальной версией. Отгул и расписание используют одну транзакцию.</summary>
-    public static async Task<DutyRow> SaveAsync(DbManager db, string? principal, int expectedActor, DutyRow? original,
-        DutyDraft draft, CancellationToken ct, bool? expectedFact = null)
+    /// <summary>Проверяет незавершённые попытки изменения расписания.</summary>
+    public static async Task<IReadOnlySet<DateOnly>> ReadOpenSaveDatesAsync(DbManager db, string? principal, int expectedActor, CancellationToken ct)
     {
+        await RequireActorAsync(db, principal, expectedActor, ct);
+        var scopes = await InventoryOperationJournal.ReadOpenScopesAsync(db, SaveKind, ct);
+        var dates = new HashSet<DateOnly>();
+        foreach (var scope in scopes)
+        {
+            if (!scope.StartsWith(ScopePrefix, StringComparison.Ordinal) ||
+                !DateOnly.TryParseExact(scope[ScopePrefix.Length..], "yyyyMMdd", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var date))
+                throw new InvalidOperationException("Серверный журнал содержит неверную дату дежурства.");
+            dates.Add(date);
+        }
+        return dates;
+    }
+
+    /// <summary>Импортирует только подтверждённую сервером область своей прежней попытки, без исхода и полей формы.</summary>
+    public static async Task ImportLegacyOperationsAsync(DbManager db, string? principal, int expectedActor, DateOnly? routeDate,
+        IReadOnlyCollection<(DateOnly Date, Guid AttemptId)> evidence, CancellationToken ct)
+    {
+        if (evidence.Count == 0) return;
+        var actor = await RequireActorAsync(db, principal, expectedActor, ct);
+        var context = await ReadContextAsync(db, ct);
+        if (!(routeDate is null ? context.CanInsert : context.CanUpdate))
+            throw new DutyRejectedException("Не удалось подтвердить доступ к журналу дежурств.", kind: DutyRejectionKind.AccessDenied);
+
+        var attempts = new List<InventoryOperationJournal.Attempt>(evidence.Count);
+        foreach (var (date, attemptId) in evidence.Distinct().OrderBy(item => item.AttemptId))
+        {
+            if (attemptId == Guid.Empty || date == DateOnly.MinValue || date == DateOnly.MaxValue ||
+                routeDate is { } required && required != date)
+                throw new DutyRejectedException("Прежняя попытка находится вне текущей даты дежурства.");
+            attempts.Add(InventoryOperationJournal.ForEmployee(actor, attemptId, SaveScope(date), SaveKind));
+        }
+        await InventoryOperationJournal.ImportLegacyAsync(db, attempts, ct);
+    }
+
+
+    /// <summary>Читает подтверждение ровно той попытки, которая принадлежит сотруднику и дате.</summary>
+    public static async Task<InventoryOperationReceipt?> ReadSaveAttemptAsync(DbManager db, string? principal, int expectedActor,
+        DateOnly date, Guid attemptId, CancellationToken ct)
+    {
+        var actor = await RequireActorAsync(db, principal, expectedActor, ct);
+        return await InventoryOperationJournal.ReadAttemptAsync(db,
+            InventoryOperationJournal.ForEmployee(actor, attemptId, SaveScope(date), SaveKind), ct);
+    }
+
+    /// <summary>Пишет план или факт. Дежурство, отгул и подтверждение исхода фиксируются одной транзакцией.</summary>
+    public static async Task<DutyRow> SaveAsync(DbManager db, string? principal, int expectedActor, DutyRow? original,
+        DutyDraft draft, Guid attemptId, CancellationToken ct, bool? expectedFact = null)
+    {
+        var validation = draft.Validate(false, null);
+        if (validation is not null) throw new DutyRejectedException(validation);
+        if (draft.Date is not { } date || date == DateOnly.MinValue || date == DateOnly.MaxValue)
+            throw new DutyRejectedException("Дата дежурства вне допустимого диапазона.");
+
+        var actor = await RequireActorAsync(db, principal, expectedActor, ct);
+        var attempt = InventoryOperationJournal.ForEmployee(actor, attemptId, SaveScope(date), SaveKind);
+        var previous = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
+        if (previous is { State: InventoryOperationState.Confirmed })
+            return await ReadSavedResultAsync(db, date, ct);
+        if (previous is { State: InventoryOperationState.Rejected })
+            throw new DutyRejectedException("Эта попытка уже отклонена.");
+        if (previous is not null)
+            throw new InventoryOperationPendingException();
+
+        await db.RunDbAsync(connection => ValidateSaveAsync(connection, null, original, draft, date, expectedFact, ct));
+        DutyRow? saved = null;
+        InventoryOperationReceipt receipt;
         try
         {
-            var actor = await Employee.GetCurrentAsync(db, principal, ct);
-            if (actor?.Id != expectedActor)
-                throw new DutyRejectedException("Не удалось подтвердить текущего сотрудника.", kind: DutyRejectionKind.AccessDenied);
-            var validation = draft.Validate(false, null);
-            if (validation is not null) throw new DutyRejectedException(validation);
-            if (draft.Date == DateOnly.MinValue || draft.Date == DateOnly.MaxValue)
-                throw new DutyRejectedException("Дата дежурства вне допустимого диапазона.");
-        }
-        catch (Exception e) when (e is not DutyRejectedException)
-        {
-            throw new DutyRejectedException("Проверка перед сохранением завершилась ошибкой. Запись не начата.", e, DutyRejectionKind.Infrastructure);
-        }
-
-        return await db.RunDbAsync(async connection =>
-        {
-            await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-            var committing = false;
-            try
-            {
-                var context = await ReadContextAsync(connection, transaction, ct);
-                if (!(original is null ? context.CanInsert : context.CanUpdate))
-                    throw new DutyRejectedException("Сохранение дежурства недоступно в текущем SQL-контексте.", kind: DutyRejectionKind.AccessDenied);
-                var date = draft.Date!.Value;
-                if (original is not null && DateOnly.FromDateTime(original.DutyDate) != date)
-                    throw new DutyRejectedException("Дата существующего дежурства не изменяется.");
-
-                var current = await ReadRowAsync(connection, transaction, date, ct);
-                if (original is null && current is not null)
-                    throw new DutyRejectedException("На эту дату уже назначено дежурство.", kind: DutyRejectionKind.DateOccupied);
-                if (current is { Closed: not 0 })
-                    throw new DutyRejectedException("Закрытое дежурство нельзя изменить.", kind: DutyRejectionKind.Closed);
-                if (!DutyRow.MatchesVersion(current, original))
-                    throw new DutyRejectedException("Дежурство изменилось после открытия карточки.", kind: DutyRejectionKind.Stale);
-
-                var fact = current is not null && date < context.BusinessDay;
-                if (expectedFact is { } displayedFact && fact != displayedFact)
-                    throw new DutyRejectedException("Серверный день изменился. Проверьте актуальный режим дежурства.", kind: DutyRejectionKind.CalendarChanged);
-                if (!fact && (draft.Confirmation is not null || draft.Close || draft.WantsTimeOff))
-                    throw new DutyRejectedException("Подтверждение доступно только для прошедшего дежурства.");
-                if (fact && current!.PlannedId != draft.PlannedId)
-                    throw new DutyRejectedException("Плановый инженер прошедшего дежурства не изменяется.");
-                if (!fact && (await FindEngineersAsync(connection, transaction, date, null, draft.PlannedId, 1, ct)).SingleOrDefault() is null)
-                    throw new DutyRejectedException("Дежурный инженер больше недоступен.");
-
-                DutyRow saved;
-                if (fact)
-                    saved = await SaveFactAsync(connection, transaction, context, current!, draft, date, ct);
-                else
+            receipt = await InventoryOperationJournal.RunSqlAsync<DutyRejectedException>(db, attempt,
+                async (connection, transaction, token) =>
                 {
-                    await connection.ExecuteAsync(Command(original is null ? SQLQueries.INSERT_Дежурство : SQLQueries.UPDATE_ДежурствоПлан,
-                        new { date = AsDate(date), engineerId = draft.PlannedId }, transaction, ct));
-                    saved = await RequireRowAsync(connection, transaction, date, ct);
-                    if (saved.PlannedId != draft.PlannedId || saved.Closed != 0)
-                        throw new DutyRejectedException("База не подтвердила сохранённый план.");
-                }
+                    try
+                    {
+                        var currentActor = await connection.QuerySingleOrDefaultAsync<Employee>(Command(
+                            SQLQueries.SELECT_ТекущийСотрудникПоPrincipal, new { WindowsPrincipal = principal }, transaction, token));
+                        if (currentActor?.Id != expectedActor)
+                            throw new DutyRejectedException("Не удалось подтвердить текущего сотрудника.", kind: DutyRejectionKind.AccessDenied);
+                        var (context, current, fact) = await ValidateSaveAsync(connection, transaction, original, draft, date, expectedFact, token);
+                        if (fact)
+                            saved = await SaveFactAsync(connection, transaction, context, current!, draft, date, token);
+                        else
+                        {
+                            await connection.ExecuteAsync(Command(original is null ? SQLQueries.INSERT_Дежурство : SQLQueries.UPDATE_ДежурствоПлан,
+                                new { date = AsDate(date), engineerId = draft.PlannedId }, transaction, token));
+                            saved = await RequireRowAsync(connection, transaction, date, token);
+                            if (saved.PlannedId != draft.PlannedId || saved.Closed != 0)
+                                throw new DutyRejectedException("База не подтвердила сохранённый план.");
+                        }
+                        return null;
+                    }
+                    catch (Exception error) when (error is not DutyRejectedException and not OperationCanceledException and not TimeoutException &&
+                        (error is not SqlException sql || sql.Number != -2 && !DbManager.IsConnectivityError(sql)))
+                    {
+                        throw new DutyRejectedException("Операция отклонена. Изменения расписания и отгула отменены.",
+                            error, DutyRejectionKind.Infrastructure);
+                    }
+                }, ct);
+        }
+        catch (Exception error) when (error is not DutyRejectedException and not InventoryOperationPendingException &&
+            !ct.IsCancellationRequested)
+        {
+            if (await ReadSaveAttemptAsync(db, principal, expectedActor, date, attemptId, ct) is not { State: InventoryOperationState.Confirmed })
+                throw;
+            return saved ?? await ReadSavedResultAsync(db, date, ct);
+        }
 
-                committing = true;
-                await transaction.CommitAsync(CancellationToken.None);
-                return saved;
-            }
-            catch (Exception e) when (!committing && e is not SqlException { Number: -2 } &&
-                (e is not SqlException sql || !DbManager.IsConnectivityError(sql)))
-            {
-                // Если rollback невозможно подтвердить, исход остаётся неопределённым.
-                if (transaction.Connection is not null)
-                    await transaction.RollbackAsync(CancellationToken.None);
-                else if (e is SqlException { Number: not (3609 or 50000) })
-                    throw;
-                throw e is DutyRejectedException rejected ? rejected :
-                    new DutyRejectedException("Операция отклонена. Изменения расписания и отгула отменены.", e, DutyRejectionKind.Infrastructure);
-            }
-        });
+        if (receipt.State != InventoryOperationState.Confirmed)
+            throw new DutyRejectedException("Эта попытка уже отклонена.");
+        return saved ?? await ReadSavedResultAsync(db, date, ct);
     }
+
+    private const string SaveKind = "duty.save";
+    private const string ScopePrefix = "duty:";
+
+    private static string SaveScope(DateOnly date) => ScopePrefix + date.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+    private static async Task<Employee> RequireActorAsync(DbManager db, string? principal, int expectedActor, CancellationToken ct)
+    {
+        var actor = await Employee.GetCurrentAsync(db, principal, ct);
+        if (actor is null || actor.Id != expectedActor)
+            throw new DutyRejectedException("Не удалось подтвердить текущего сотрудника.", kind: DutyRejectionKind.AccessDenied);
+        return actor;
+    }
+
+    private static async Task<DutyRow> ReadSavedResultAsync(DbManager db, DateOnly date, CancellationToken ct) =>
+        await ReadAsync(db, date, ct) ??
+        throw new InvalidOperationException("Операция подтверждена журналом. Карточка недоступна для чтения.");
+
+    private static async Task<(DutyContext Context, DutyRow? Current, bool Fact)> ValidateSaveAsync(
+        DbConnection connection, DbTransaction? transaction, DutyRow? original, DutyDraft draft,
+        DateOnly date, bool? expectedFact, CancellationToken ct)
+    {
+        var context = await ReadContextAsync(connection, transaction, ct);
+        if (!(original is null ? context.CanInsert : context.CanUpdate))
+            throw new DutyRejectedException("Сохранение дежурства недоступно в текущем SQL-контексте.", kind: DutyRejectionKind.AccessDenied);
+        if (original is not null && DateOnly.FromDateTime(original.DutyDate) != date)
+            throw new DutyRejectedException("Дата существующего дежурства не изменяется.");
+
+        var current = await ReadRowAsync(connection, transaction, date, ct);
+        if (original is null && current is not null)
+            throw new DutyRejectedException("На эту дату уже назначено дежурство.", kind: DutyRejectionKind.DateOccupied);
+        if (current is { Closed: not 0 })
+            throw new DutyRejectedException("Закрытое дежурство нельзя изменить.", kind: DutyRejectionKind.Closed);
+        if (!DutyRow.MatchesVersion(current, original))
+            throw new DutyRejectedException("Дежурство изменилось после открытия карточки.", kind: DutyRejectionKind.Stale);
+
+        var fact = current is not null && date < context.BusinessDay;
+        if (expectedFact is { } displayedFact && fact != displayedFact)
+            throw new DutyRejectedException("Серверный день изменился. Проверьте актуальный режим дежурства.", kind: DutyRejectionKind.CalendarChanged);
+        if (!fact && (draft.Confirmation is not null || draft.Close || draft.WantsTimeOff))
+            throw new DutyRejectedException("Подтверждение доступно только для прошедшего дежурства.");
+        if (fact && current!.PlannedId != draft.PlannedId)
+            throw new DutyRejectedException("Плановый инженер прошедшего дежурства не изменяется.");
+        if (!fact && (await FindEngineersAsync(connection, transaction, date, null, draft.PlannedId, 1, ct)).SingleOrDefault() is null)
+            throw new DutyRejectedException("Дежурный инженер больше недоступен.");
+
+        return (context, current, fact);
+    }
+
 
     private static async Task<DutyRow> SaveFactAsync(DbConnection connection, DbTransaction transaction,
         DutyContext context, DutyRow original, DutyDraft draft, DateOnly date, CancellationToken ct)

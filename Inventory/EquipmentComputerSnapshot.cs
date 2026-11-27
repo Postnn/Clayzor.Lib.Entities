@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -134,7 +136,41 @@ public sealed class EquipmentComputerSnapshot
     }
 
     /// <summary>Сохраняет дневной снимок через подтверждённый UPSERT.</summary>
-    public Task SaveAsync(DbManager db)
+    public Task SaveAsync(DbManager db) => db.ExecuteAsync(SQLQueries.UPDATE_Компьютеры,
+        WriteParameters(), commandType: CommandType.Text);
+
+    internal async Task<int> SaveEnlistedAsync(DbConnection connection, DbTransaction transaction, CancellationToken ct)
+    {
+        object parameters;
+        try { parameters = WriteParameters(); }
+        catch (OverflowException)
+        {
+            throw new EquipmentComputerWriteRejectedException("Суммарный объём компонентов превышает допустимое значение.");
+        }
+        var proof = await connection.QuerySingleOrDefaultAsync<ComputerWriteProof>(new CommandDefinition(
+            SQLQueries.UPDATE_КомпьютерыEnlisted, parameters, transaction, commandType: CommandType.Text, cancellationToken: ct));
+        var rejection = proof?.Status switch
+        {
+            1 => "Строка компьютера изменилась или была удалена. Обновите данные.",
+            2 => "Строка компьютера за выбранную дату уже существует. Обновите данные.",
+            3 => "База не подтвердила сохранение снимка компьютера.",
+            _ => null,
+        };
+        if (rejection is not null) throw new EquipmentComputerWriteRejectedException(rejection);
+        if (proof is not { Status: 0, ConfirmedEquipmentId: > 0 } || proof.ConfirmedEquipmentId != EquipmentId)
+            throw new InvalidOperationException("База не подтвердила точный ключ снимка компьютера.");
+        return EquipmentId;
+    }
+
+    private sealed class ComputerWriteProof
+    {
+        /// <summary>Именованный статус сохранения.</summary>
+        public int? Status { get; set; }
+        /// <summary>Серверный код оборудования подтверждённого снимка.</summary>
+        public int? ConfirmedEquipmentId { get; set; }
+    }
+
+    private object WriteParameters()
     {
         RamDetail = EquipmentComputerDetail.Serialize(RamComponents, false);
         HdDetail = EquipmentComputerDetail.Serialize(HdComponents, true);
@@ -142,7 +178,7 @@ public sealed class EquipmentComputerSnapshot
         RamMb = checked((int)EquipmentComputerDetail.Sum(RamComponents));
         HdGb = (float)EquipmentComputerDetail.Sum(HdComponents);
         SsdGb = checked((int)EquipmentComputerDetail.Sum(SsdComponents));
-        return db.ExecuteAsync(SQLQueries.UPDATE_Компьютеры, new
+        return new
         {
             КодОборудования = EquipmentId,
             С = Date.Date,
@@ -160,6 +196,8 @@ public sealed class EquipmentComputerSnapshot
             ДатаСтандартнойКонфигурации2 = Configuration2Date,
             Лицензия = License ?? string.Empty,
             Примечания = Notes ?? string.Empty,
-        }, commandType: CommandType.Text);
+        };
     }
 }
+
+internal sealed class EquipmentComputerWriteRejectedException(string message) : InvalidOperationException(message);

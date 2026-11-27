@@ -9,7 +9,46 @@ internal static class EquipmentPhoneSaveBuilder
     internal static EquipmentPhoneSaveCommand Build(
         Equipment equipment,
         IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current) => Build(equipment, original, current, enlisted: false);
+
+    internal static EquipmentPhoneSaveCommand BuildEnlisted(Equipment equipment,
+        IReadOnlyCollection<EquipmentPhoneLink> original, IReadOnlyCollection<EquipmentPhoneLink> current) =>
+        Build(equipment, original, current, enlisted: true);
+
+    internal static IEnumerable<int> ChangedPhoneIds(int equipmentId, IReadOnlyCollection<EquipmentPhoneLink> original,
         IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        ValidateDiff(equipmentId, original, current);
+        var before = original.ToDictionary(item => item.PhoneId);
+        var after = current.ToDictionary(item => item.PhoneId);
+        return before.Keys.Union(after.Keys)
+            .Where(id => !before.TryGetValue(id, out var source) || !after.TryGetValue(id, out var target) || HasChanges(source, target));
+    }
+
+    internal static EquipmentAtsSaveCandidate[] AtsCandidates(int equipmentId, IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current)
+    {
+        ValidateDiff(equipmentId, original, current);
+        var before = original.ToDictionary(item => item.PhoneId);
+        var after = current.ToDictionary(item => item.PhoneId);
+        var phones = before.Keys.Union(after.Keys)
+            .Where(id => !before.TryGetValue(id, out var source) || !after.TryGetValue(id, out var target) || HasAtsChanges(source, target))
+            .Order().ToArray();
+        if (phones.Length == 0) return [];
+
+        var affected = phones.ToHashSet();
+        var ccm = original.Concat(current).Where(link => affected.Contains(link.PhoneId) && link.ConnectionEquipmentId is > 0)
+            .Select(link => link.ConnectionEquipmentId!.Value).Distinct().Order().DefaultIfEmpty(equipmentId);
+        return phones.Select(id => new EquipmentAtsSaveCandidate(EquipmentAtsSaveCandidate.Phone, id, !after.ContainsKey(id)))
+            .Concat(ccm.Select(id => new EquipmentAtsSaveCandidate(EquipmentAtsSaveCandidate.Ccm, id, false))).ToArray();
+    }
+
+    internal static bool HasAtsChanges(EquipmentPhoneLink source, EquipmentPhoneLink target) =>
+        source.ConnectionEquipmentId != target.ConnectionEquipmentId || source.AutoDialNumber != target.AutoDialNumber ||
+        source.AutoDialDelay != target.AutoDialDelay || source.IsDefault != target.IsDefault;
+
+    private static EquipmentPhoneSaveCommand Build(Equipment equipment, IReadOnlyCollection<EquipmentPhoneLink> original,
+        IReadOnlyCollection<EquipmentPhoneLink> current, bool enlisted)
     {
         ValidateDiff(equipment.Id, original, current);
         var parameters = new DynamicParameters();
@@ -18,25 +57,30 @@ internal static class EquipmentPhoneSaveBuilder
         parameters.Add("@ОжидаемоеКоличествоСвязей", original.Count, DbType.Int32);
         var sql = new StringBuilder();
         sql.AppendLine("SET NOCOUNT ON;");
-        sql.AppendLine("SET XACT_ABORT ON;");
-        sql.AppendLine("BEGIN TRY");
-        sql.AppendLine("    BEGIN TRANSACTION;");
+        if (!enlisted)
+        {
+            sql.AppendLine("SET XACT_ABORT ON;");
+            sql.AppendLine("BEGIN TRY");
+            sql.AppendLine("    BEGIN TRANSACTION;");
+        }
         sql.AppendLine("    IF (SELECT COUNT(*) FROM ТелефонныеНомераОборудование WITH (UPDLOCK, HOLDLOCK)");
         sql.AppendLine("        WHERE КодОборудования = @КодОборудования) <> @ОжидаемоеКоличествоСвязей");
-        sql.AppendLine("        RAISERROR('Телефонные связи были изменены другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
+        sql.AppendLine(enlisted ? "        BEGIN SELECT -1; RETURN; END;" :
+            "        RAISERROR('Телефонные связи были изменены другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
         var index = 0;
         foreach (var item in original.OrderBy(item => item.PhoneId))
         {
             var prefix = $"before{index++}";
             AddLinkParameters(parameters, prefix, item);
-            sql.AppendLine(string.Format(SQLQueries.GUARD_ИсходнаяТелефоннаяСвязь,
+            sql.AppendLine(string.Format(enlisted ? SQLQueries.GUARD_ИсходнаяТелефоннаяСвязьEnlisted : SQLQueries.GUARD_ИсходнаяТелефоннаяСвязь,
                 Parameter(prefix, "Phone"), Parameter(prefix, "Connection"), Parameter(prefix, "AutoDial"),
                 Parameter(prefix, "Delay"), Parameter(prefix, "Default"), Parameter(prefix, "Return"),
                 Parameter(prefix, "Notes")));
         }
 
         sql.AppendLine(SQLQueries.UPDATE_Оборудование);
-        sql.AppendLine("    IF @@ROWCOUNT <> 1 RAISERROR('Запись оборудования была изменена или удалена другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
+        sql.AppendLine(enlisted ? ";\n    IF @@ROWCOUNT <> 1 BEGIN SELECT -1; RETURN; END;" :
+            "    IF @@ROWCOUNT <> 1 RAISERROR('Запись оборудования была изменена или удалена другим пользователем. Обновите данные и повторите операцию.', 16, 1);");
 
         var originalIds = original.Select(item => item.PhoneId).ToHashSet();
         var currentIds = current.Select(item => item.PhoneId).ToHashSet();
@@ -45,7 +89,7 @@ internal static class EquipmentPhoneSaveBuilder
         {
             var phoneParameter = $"@delPhone{index++}";
             parameters.Add(phoneParameter, phoneId, DbType.Int32);
-            sql.AppendLine(string.Format(SQLQueries.DELETE_ОборудованиеТелефона, phoneParameter));
+            sql.AppendLine(string.Format(enlisted ? SQLQueries.DELETE_ОборудованиеТелефонаEnlisted : SQLQueries.DELETE_ОборудованиеТелефона, phoneParameter));
         }
 
         var originalById = original.ToDictionary(item => item.PhoneId);
@@ -57,7 +101,7 @@ internal static class EquipmentPhoneSaveBuilder
             var prefix = $"update{index}";
             AddLinkParameters(parameters, prefix, item);
             AddOriginalLinkParameters(parameters, prefix, source);
-            sql.AppendLine(string.Format(SQLQueries.UPDATE_ОборудованиеТелефонаСвязи,
+            sql.AppendLine(string.Format(enlisted ? SQLQueries.UPDATE_ОборудованиеТелефонаСвязиEnlisted : SQLQueries.UPDATE_ОборудованиеТелефонаСвязи,
                 Parameter(prefix, "Phone"), Parameter(prefix, "Connection"), Parameter(prefix, "AutoDial"),
                 Parameter(prefix, "Delay"), Parameter(prefix, "Default"), Parameter(prefix, "Return"),
                 Parameter(prefix, "Notes"), Parameter(prefix, "OldConnection"), Parameter(prefix, "OldAutoDial"),
@@ -82,15 +126,20 @@ internal static class EquipmentPhoneSaveBuilder
             index++;
         }
 
-        sql.AppendLine("    COMMIT TRANSACTION;");
-        sql.AppendLine("END TRY");
-        sql.AppendLine("BEGIN CATCH");
-        sql.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
-        sql.AppendLine("    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();");
-        sql.AppendLine("    DECLARE @ErrorSeverity int = ERROR_SEVERITY();");
-        sql.AppendLine("    DECLARE @ErrorState int = ERROR_STATE();");
-        sql.AppendLine("    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);");
-        sql.AppendLine("END CATCH;");
+        if (enlisted)
+            sql.AppendLine(";\nSELECT 0;");
+        else
+        {
+            sql.AppendLine("    COMMIT TRANSACTION;");
+            sql.AppendLine("END TRY");
+            sql.AppendLine("BEGIN CATCH");
+            sql.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
+            sql.AppendLine("    DECLARE @ErrorMessage nvarchar(4000) = ERROR_MESSAGE();");
+            sql.AppendLine("    DECLARE @ErrorSeverity int = ERROR_SEVERITY();");
+            sql.AppendLine("    DECLARE @ErrorState int = ERROR_STATE();");
+            sql.AppendLine("    RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);");
+            sql.AppendLine("END CATCH;");
+        }
         return new EquipmentPhoneSaveCommand(sql.ToString(), parameters);
     }
 

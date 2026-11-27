@@ -27,4 +27,8 @@ public sealed record EquipmentPhoneSyncIntent(
     int? OwnerId,
     int? EquipmentTypeId,
     IReadOnlyCollection<EquipmentPhoneLink> Original,
-    IReadOnlyCollection<EquipmentPhoneLink> Current);
+    IReadOnlyCollection<EquipmentPhoneLink> Current)
+{
+    /// <summary>Указывает, что план после SQL-сохранения читается из серверного журнала по AttemptId.</summary>
+    public bool DurableSave { get; init; }
+}

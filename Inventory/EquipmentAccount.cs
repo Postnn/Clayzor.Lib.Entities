@@ -76,22 +76,61 @@ public sealed class EquipmentAccount
     /// <summary>Удаляет ровно одну строку с подтверждённым исходным состоянием.</summary>
     public Task DeleteAsync(DbManager db) => WriteAsync(db, SQLQueries.DELETE_ОборудованиеУчётныеЗаписи, compare: true, delete: true);
 
+    internal async Task<int> WriteEnlistedAsync(DbConnection connection, DbTransaction transaction, EquipmentAccountChange change,
+        CancellationToken ct)
+    {
+        var equipmentId = EquipmentId;
+        var login = Login;
+        var current = await ReadSnapshotAsync(connection, equipmentId, login, transaction, ct);
+        if (change == EquipmentAccountChange.Insert ? current is not null : current is null ||
+            string.IsNullOrWhiteSpace(ExpectedVersion) || !string.Equals(ExpectedVersion, current.CaptureVersion(), StringComparison.Ordinal))
+            throw new EquipmentAccountWriteRejectedException("Исходная версия учётной записи не подтверждена. Сверьте актуальные данные.");
+
+        var sql = change switch
+        {
+            EquipmentAccountChange.Insert => SQLQueries.INSERT_ОборудованиеУчётныеЗаписиEnlisted,
+            EquipmentAccountChange.Update => SQLQueries.UPDATE_ОборудованиеУчётныеЗаписи,
+            EquipmentAccountChange.Delete => SQLQueries.DELETE_ОборудованиеУчётныеЗаписи,
+            _ => throw new ArgumentOutOfRangeException(nameof(change)),
+        };
+        var deleting = change == EquipmentAccountChange.Delete;
+        var affected = await connection.ExecuteScalarAsync<int>(new CommandDefinition(sql, WriteParameters(equipmentId, login, deleting),
+            transaction, commandType: CommandType.Text, cancellationToken: ct));
+        if (affected != 1)
+            throw new EquipmentAccountWriteRejectedException("База не подтвердила изменение одной учётной записи.");
+
+        var after = await ReadSnapshotAsync(connection, equipmentId, login, transaction, ct);
+        var exact = deleting ? after is null : after is not null && after.EquipmentId == equipmentId &&
+            string.Equals(after.Login, login, StringComparison.Ordinal) &&
+            string.Equals(after.Password, Password, StringComparison.Ordinal) && after.LimitedRights == LimitedRights &&
+            string.Equals(after.Notes ?? string.Empty, Notes ?? string.Empty, StringComparison.Ordinal);
+        if (!exact)
+            throw new EquipmentAccountWriteRejectedException("База не подтвердила точный результат изменения учётной записи.");
+        return equipmentId;
+    }
+
+    internal static string AttemptBinding(int equipmentId, string login, ReadOnlySpan<byte> nonce)
+    {
+        if (nonce.Length != 32)
+            throw new ArgumentException("Не удалось подтвердить контекст попытки учётной записи.", nameof(nonce));
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: true);
+        writer.Write(equipmentId);
+        writer.Write(login);
+        var bytes = stream.GetBuffer().AsSpan(0, checked((int)stream.Length));
+        try { return Convert.ToHexStringLower(HMACSHA256.HashData(nonce, bytes)); }
+        finally { CryptographicOperations.ZeroMemory(bytes); }
+    }
+
     private async Task WriteAsync(DbManager db, string sql, bool compare, bool delete)
     {
         var expected = ExpectedVersion;
         if (compare && string.IsNullOrWhiteSpace(expected))
             throw Conflict();
 
-        var key = new { КодОборудования = EquipmentId, Логин = Login };
-        var values = new
-        {
-            key.КодОборудования,
-            key.Логин,
-            Пароль = Password,
-            ОграниченныеПрава = LimitedRights,
-            Примечание = Notes ?? string.Empty,
-        };
-        object parameters = delete ? key : values;
+        var equipmentId = EquipmentId;
+        var login = Login;
+        var parameters = WriteParameters(equipmentId, login, delete);
         try
         {
             await db.RunDbAsync(async connection =>
@@ -109,7 +148,7 @@ public sealed class EquipmentAccount
                     await using var transaction = await connection.BeginTransactionAsync();
                     try
                     {
-                        var current = await ReadSnapshotAsync(connection, key.КодОборудования, key.Логин, transaction);
+                        var current = await ReadSnapshotAsync(connection, equipmentId, login, transaction);
                         if (current is null || !string.Equals(expected, current.CaptureVersion(), StringComparison.Ordinal))
                             throw Conflict();
 
@@ -147,12 +186,17 @@ public sealed class EquipmentAccount
         }
     }
 
+    private object WriteParameters(int equipmentId, string login, bool delete) => delete
+        ? new { КодОборудования = equipmentId, Логин = login }
+        : new { КодОборудования = equipmentId, Логин = login, Пароль = Password, ОграниченныеПрава = LimitedRights,
+            Примечание = Notes ?? string.Empty };
+
     private static Task<EquipmentAccount?> ReadSnapshotAsync(
-        DbConnection connection, int equipmentId, string login, DbTransaction? transaction = null) =>
-        connection.QuerySingleOrDefaultAsync<EquipmentAccount>(
+        DbConnection connection, int equipmentId, string login, DbTransaction? transaction = null, CancellationToken ct = default) =>
+        connection.QuerySingleOrDefaultAsync<EquipmentAccount>(new CommandDefinition(
             string.Format(CultureInfo.InvariantCulture, SQLQueries.SELECT_ОборудованиеУчётнаяЗаписьСнимок,
                 transaction is null ? "" : "WITH (UPDLOCK, HOLDLOCK)"),
-            new { EquipmentId = equipmentId, Login = login }, transaction, commandType: CommandType.Text);
+            new { EquipmentId = equipmentId, Login = login }, transaction, commandType: CommandType.Text, cancellationToken: ct));
 
     internal string CaptureVersion()
     {
@@ -171,6 +215,10 @@ public sealed class EquipmentAccount
     private static InvalidOperationException Conflict() =>
         new("Исходная версия учётной записи не подтверждена. Введённые данные сохранены в редакторе. Сверьте актуальные данные.");
 }
+
+internal enum EquipmentAccountChange { Insert, Update, Delete }
+
+internal sealed class EquipmentAccountWriteRejectedException(string message) : InvalidOperationException(message);
 
 /// <summary>Сбой операции с учётной записью без исходного SQL-исключения или секретных параметров.</summary>
 /// <param name="wasDispatched">Команда записи передана провайдеру.</param>

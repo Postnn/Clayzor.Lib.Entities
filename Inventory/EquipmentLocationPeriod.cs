@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
+using System.Data.Common;
 using Clayzor.Lib.DALC;
 
 namespace Clayzor.Lib.Entities.Inventory;
@@ -53,16 +54,24 @@ public sealed class EquipmentLocationPeriod
     /// <summary>Обновляет только срок возврата и примечания существующего периода.</summary>
     public async Task UpdateAsync(DbManager db)
     {
-        var affectedRows = await db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеРасположение, new
-        {
-            КодОборудования = EquipmentId,
-            От = FromUtc,
-            ИсходноеИзменено = ChangedAtUtc,
-            СрокВозврата = ReturnDate,
-            Примечания = Notes ?? string.Empty,
-        }, commandType: CommandType.Text);
+        var affectedRows = await db.ExecuteAsync(SQLQueries.UPDATE_ОборудованиеРасположение,
+            UpdateParameters(FromUtc), commandType: CommandType.Text);
         if (affectedRows != 1)
             throw new InvalidOperationException(
                 "Период расположения был изменён или удалён другим пользователем. Обновите данные и повторите операцию.");
     }
+
+    internal Task<int> UpdateEnlistedAsync(DbConnection connection, DbTransaction transaction, DateTime fromUtc, CancellationToken ct) =>
+        EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, SQLQueries.UPDATE_ОборудованиеРасположениеEnlisted,
+            UpdateParameters(fromUtc), EquipmentId, ct);
+
+    private object UpdateParameters(DateTime fromUtc) => new
+    {
+        КодОборудования = EquipmentId,
+        КодРасположения = LocationId,
+        От = fromUtc,
+        ИсходноеИзменено = ChangedAtUtc,
+        СрокВозврата = ReturnDate,
+        Примечания = Notes ?? string.Empty,
+    };
 }

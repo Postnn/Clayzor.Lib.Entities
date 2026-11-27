@@ -64,6 +64,9 @@ public sealed class PhonePoolAttributeUnknownException(Exception inner) : Invali
 /// <summary>Чтение и атомарные операции значения атрибута существующего пула.</summary>
 public static class PhonePoolAttributeData
 {
+    private const string SaveKind = "phone-pool-attribute.save";
+    private const string DeleteKind = "phone-pool-attribute.delete";
+
     /// <summary>Читает карточку и разрешения при явном доступе к представлению.</summary>
     public static Task<(PhonePoolAttributeCard Card, PhonePoolAttributeRights Rights)> ReadAsync(
         DbManager db, Employee actor, PhonePoolAttributeKey key, CancellationToken ct) =>
@@ -77,81 +80,172 @@ public static class PhonePoolAttributeData
 
     /// <summary>Сохраняет новую или существующую пару по исходной версии и возвращает проверенный снимок.</summary>
     public static Task<PhonePoolAttributeCard> SaveAsync(DbManager db, string? principal, int expectedEmployeeId,
-        PhonePoolAttributeKey key, PhonePoolAttributeValue? original, string value, CancellationToken ct)
+        PhonePoolAttributeKey key, PhonePoolAttributeValue? original, string value, CancellationToken ct,
+        Guid? attemptId = null)
     {
         if (PhonePoolAttributeKey.ValidateValue(value) is { } error)
             throw new PhonePoolAttributeRejectedException(error);
-        return WriteAsync(db, principal, expectedEmployeeId, key, original, value, delete: false, ct);
+        return WriteAsync(db, principal, expectedEmployeeId, key, original, value, delete: false, ct, attemptId ?? Guid.NewGuid());
     }
 
     /// <summary>Удаляет только существующую пару с совпадающим исходным снимком.</summary>
     public static Task<PhonePoolAttributeCard> DeleteAsync(DbManager db, string? principal, int expectedEmployeeId,
-        PhonePoolAttributeKey key, PhonePoolAttributeValue original, CancellationToken ct)
+        PhonePoolAttributeKey key, PhonePoolAttributeValue original, CancellationToken ct, Guid? attemptId = null)
     {
         ArgumentNullException.ThrowIfNull(original);
-        return WriteAsync(db, principal, expectedEmployeeId, key, original, null, delete: true, ct);
+        return WriteAsync(db, principal, expectedEmployeeId, key, original, null, delete: true, ct, attemptId ?? Guid.NewGuid());
+    }
+
+    /// <summary>Читает карточку и состояние открытого слота только после проверки доступа к паре.</summary>
+    public static async Task<(PhonePoolAttributeCard Card, PhonePoolAttributeRights Rights, bool WritePending)> ReadEditorAsync(
+        DbManager db, Employee actor, PhonePoolAttributeKey key,
+        CancellationToken ct)
+    {
+        var (card, rights) = await ReadAsync(db, actor, key, ct);
+        var scope = ConflictKey(card.Key);
+        var saves = await InventoryOperationJournal.ReadOpenScopesAsync(db, SaveKind, ct);
+        if (saves.Contains(scope, StringComparer.Ordinal)) return (card, rights, true);
+        var deletes = await InventoryOperationJournal.ReadOpenScopesAsync(db, DeleteKind, ct);
+        return (card, rights, deletes.Contains(scope, StringComparer.Ordinal));
+    }
+
+    /// <summary>Импортирует неподтверждённые попытки владельца после свежей проверки доступа к канонической паре.</summary>
+    public static async Task ImportLegacyOperationsAsync(DbManager db, string? principal, int expectedEmployeeId,
+        PhonePoolAttributeKey key, IReadOnlyCollection<(Guid AttemptId, string Kind)> evidence, CancellationToken ct)
+    {
+        if (evidence.Count == 0) return;
+        var actor = RequireActor(await Employee.GetCurrentWithRolesAsync(db, principal, ct), expectedEmployeeId);
+        var (card, rights) = await ReadAsync(db, actor, key, ct);
+        if (card.Key.RouteId != key.RouteId || !(rights.CanInsert || rights.CanUpdate || rights.CanDelete))
+            throw new PhonePoolAttributeRejectedException("Не удалось подтвердить доступ к журналу этой пары.");
+
+        var attempts = new List<InventoryOperationJournal.Attempt>(evidence.Count);
+        foreach (var (attemptId, kind) in evidence.Distinct().OrderBy(item => item.AttemptId))
+        {
+            if (attemptId == Guid.Empty)
+                throw new PhonePoolAttributeRejectedException("Прежняя попытка изменения атрибута требует сверки.");
+            var commandKind = kind switch
+            {
+                "phone-pool-attribute.insert" or "phone-pool-attribute.update" => SaveKind,
+                "phone-pool-attribute.delete" => DeleteKind,
+                _ => throw new PhonePoolAttributeRejectedException("Прежняя попытка изменения атрибута требует сверки."),
+            };
+            attempts.Add(InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(card.Key), commandKind));
+        }
+
+        await InventoryOperationJournal.ImportLegacyAsync(db, attempts, ct);
+    }
+
+
+    /// <summary>Сверяет точную попытку сотрудника по доступной канонической паре и виду команды.</summary>
+    public static async Task<InventoryOperationReceipt?> ReadWriteReceiptAsync(DbManager db, string? principal,
+        int expectedEmployeeId, PhonePoolAttributeKey key, Guid attemptId, bool delete, CancellationToken ct)
+    {
+        var actor = await Employee.GetCurrentWithRolesAsync(db, principal, ct);
+        if (actor is null || actor.Id != expectedEmployeeId)
+            return null;
+        var (card, _) = await ReadAsync(db, actor, key, ct);
+        var attempt = InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(card.Key), delete ? DeleteKind : SaveKind);
+        try
+        {
+            var receipt = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
+            return receipt is { State: InventoryOperationState.Confirmed } && receipt.ResultEntityId != card.Key.PoolId
+                ? null : receipt;
+        }
+        catch (InventoryOperationPendingException)
+        {
+            return null;
+        }
     }
 
     private static async Task<PhonePoolAttributeCard> WriteAsync(DbManager db, string? principal, int expectedEmployeeId,
-        PhonePoolAttributeKey key, PhonePoolAttributeValue? original, string? value, bool delete, CancellationToken ct)
+        PhonePoolAttributeKey key, PhonePoolAttributeValue? original, string? value, bool delete, CancellationToken ct, Guid attemptId)
     {
         Employee actor;
+        PhonePoolAttributeCard opened;
+        InventoryOperationJournal.Attempt attempt;
         try
         {
             if (!key.IsValid) throw new PhonePoolAttributeRejectedException("Некорректный ключ атрибута.");
-            actor = await Employee.GetCurrentWithRolesAsync(db, principal, ct) is { } current && current.Id == expectedEmployeeId
-                ? current : throw new PhonePoolAttributeRejectedException("Не удалось подтвердить текущего сотрудника.");
+            actor = RequireActor(await Employee.GetCurrentWithRolesAsync(db, principal, ct), expectedEmployeeId);
+            opened = await db.RunDbAsync(connection => ReadForWriteAsync(connection, null, actor, key, original, delete, ct));
+            attempt = InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(opened.Key), delete ? DeleteKind : SaveKind);
+            var previous = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
+            if (previous is { State: InventoryOperationState.Confirmed }) return opened;
+            if (previous is { State: InventoryOperationState.Rejected })
+                throw new PhonePoolAttributeRejectedException("Запись ранее отклонена. Перечитайте карточку.");
+            if (previous is not null) throw new InventoryOperationPendingException();
+            EnsureOriginal(opened, original);
         }
-        catch (Exception e) when (e is not PhonePoolAttributeRejectedException)
+        catch (Exception e) when (e is not PhonePoolAttributeRejectedException and not InventoryOperationPendingException)
         {
             throw new PhonePoolAttributeRejectedException("Проверка сотрудника не завершилась. Запись не начата.", e);
         }
 
-        return await db.RunDbAsync(async connection =>
+        PhonePoolAttributeCard? saved = null;
+        try
         {
-            await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-            var committing = false;
+            var receipt = await InventoryOperationJournal.RunSqlAsync<PhonePoolAttributeRejectedException>(
+                db, attempt, WriteValueAsync, ct);
+            if (receipt.State == InventoryOperationState.Rejected)
+                throw new PhonePoolAttributeRejectedException("Запись ранее отклонена. Перечитайте карточку.");
+            return saved ?? opened;
+        }
+        catch (Exception e) when (e is not PhonePoolAttributeRejectedException and not InventoryOperationPendingException)
+        {
+            throw new PhonePoolAttributeUnknownException(e);
+        }
+
+        async Task<int?> WriteValueAsync(DbConnection connection, DbTransaction transaction, CancellationToken token)
+        {
             try
             {
-                var rights = await ReadRightsAsync(connection, transaction, actor, ct);
-                if (!rights.CanRead || !(delete ? rights.CanDelete : original is null ? rights.CanInsert : rights.CanUpdate))
-                    throw new PhonePoolAttributeRejectedException("Нет разрешения на изменение атрибута.");
-
-                var card = await ReadCardAsync(connection, transaction, key, ct);
-                if (!MatchesOriginal(card.Attribute, original))
-                    throw new PhonePoolAttributeRejectedException(card.Attribute is null
-                        ? "Запись уже удалена. Перечитайте карточку."
-                        : "Значение уже создано или изменено. Перечитайте карточку.");
-
+                var current = RequireActor(await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, token),
+                    expectedEmployeeId);
+                var card = await ReadForWriteAsync(connection, transaction, current, key, original, delete, token);
+                if (card.Key != opened.Key)
+                    throw new PhonePoolAttributeRejectedException("Ключ атрибута изменился. Перечитайте карточку.");
+                EnsureOriginal(card, original);
                 var sql = delete ? SQLQueries.DELETE_АтрибутПула
                     : original is null ? SQLQueries.INSERT_АтрибутПула : SQLQueries.UPDATE_АтрибутПула;
                 var affected = await connection.QuerySingleAsync<int>(Command(sql,
-                    new { poolId = card.Key.PoolId, type = card.Key.Type, value }, transaction, ct));
+                    new { poolId = card.Key.PoolId, type = card.Key.Type, value }, transaction, token));
                 if (affected != 1)
                     throw new PhonePoolAttributeRejectedException("База не подтвердила изменение одной записи атрибута.");
-                var saved = await ReadCardAsync(connection, transaction, card.Key, ct);
+                saved = await ReadCardAsync(connection, transaction, card.Key, token);
                 if (delete ? saved.Attribute is not null : saved.Attribute is null || saved.Attribute.Value != value)
                     throw new PhonePoolAttributeRejectedException("База не подтвердила результат операции с атрибутом.");
-                committing = true;
-                await transaction.CommitAsync(CancellationToken.None);
-                return saved;
+                return card.Key.PoolId;
             }
-            catch (Exception e)
+            catch (SqlException e) when (e.Number != -2 && !DbManager.IsConnectivityError(e))
             {
-                if (committing || e is SqlException sql && (sql.Number == -2 || DbManager.IsConnectivityError(sql)))
-                    throw new PhonePoolAttributeUnknownException(e);
-                try
-                {
-                    if (transaction.Connection is not null) await transaction.RollbackAsync(CancellationToken.None);
-                }
-                catch (Exception rollback)
-                {
-                    throw new PhonePoolAttributeUnknownException(rollback);
-                }
-                if (e is PhonePoolAttributeRejectedException) throw;
                 throw new PhonePoolAttributeRejectedException("База отклонила операцию с атрибутом.", e);
             }
-        });
+        }
+    }
+
+    private static string ConflictKey(PhonePoolAttributeKey key) =>
+        "phone-pool-attribute/" + key.PoolId.ToString(CultureInfo.InvariantCulture) + "/" + key.Type;
+
+    private static Employee RequireActor(Employee? actor, int expectedEmployeeId) =>
+        actor is not null && actor.Id == expectedEmployeeId ? actor
+            : throw new PhonePoolAttributeRejectedException("Не удалось подтвердить текущего сотрудника.");
+
+    private static async Task<PhonePoolAttributeCard> ReadForWriteAsync(DbConnection connection, DbTransaction? transaction,
+        Employee actor, PhonePoolAttributeKey key, PhonePoolAttributeValue? original, bool delete, CancellationToken ct)
+    {
+        var rights = await ReadRightsAsync(connection, transaction, actor, ct);
+        if (!rights.CanRead || !(delete ? rights.CanDelete : original is null ? rights.CanInsert : rights.CanUpdate))
+            throw new PhonePoolAttributeRejectedException("Нет разрешения на изменение атрибута.");
+        return await ReadCardAsync(connection, transaction, key, ct);
+    }
+
+    private static void EnsureOriginal(PhonePoolAttributeCard card, PhonePoolAttributeValue? original)
+    {
+        if (!MatchesOriginal(card.Attribute, original))
+            throw new PhonePoolAttributeRejectedException(card.Attribute is null
+                ? "Запись уже удалена. Перечитайте карточку."
+                : "Значение уже создано или изменено. Перечитайте карточку.");
     }
 
     // Имя автора является подписью справочника и может измениться независимо от пары.

@@ -1,5 +1,8 @@
+using System.Data;
+using System.Data.Common;
 using System.ComponentModel.DataAnnotations.Schema;
 using Clayzor.Lib.DALC;
+using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
@@ -105,6 +108,31 @@ public sealed class Employee : ILookupEntity
             null, cancellationToken);
         employee.SetRoleGrants(roles);
         return employee;
+    }
+
+    internal static async Task<Employee?> GetCurrentWithRolesAsync(DbConnection connection, DbTransaction? transaction,
+        string? windowsPrincipal, CancellationToken ct)
+    {
+        var employee = await GetCurrentAsync(connection, transaction, windowsPrincipal, ct);
+        if (employee is null)
+            return null;
+
+        var roles = await connection.QueryAsync<EmployeeRoleGrant>(new CommandDefinition(
+            SQLQueries.SELECT_ТекущиеРолиДляСотрудника, null, transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
+        employee.SetRoleGrants(roles);
+        return employee;
+    }
+
+    internal static async Task<Employee?> GetCurrentAsync(DbConnection connection, DbTransaction? transaction,
+        string? windowsPrincipal, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(windowsPrincipal))
+            return null;
+
+        return await connection.QuerySingleOrDefaultAsync<Employee>(new CommandDefinition(
+            SQLQueries.SELECT_ТекущийСотрудникПоPrincipal, new { WindowsPrincipal = windowsPrincipal }, transaction,
+            commandType: CommandType.Text, cancellationToken: ct));
     }
 
     /// <summary>Проверяет роль после свежего подтверждения Windows/SQL principal.</summary>
