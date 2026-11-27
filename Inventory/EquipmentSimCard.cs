@@ -306,16 +306,15 @@ public sealed class EquipmentSimCard
             return await db.RunDbAsync(async connection =>
             {
                 try { return await action(connection); }
-                catch (DbException error)
+                catch (DbException)
                 {
-                    var unknown = write && (error is not SqlException sqlError || DbManager.IsConnectivityError(sqlError));
-                    throw new EquipmentSimStorageException(write, unknown);
+                    throw new EquipmentSimStorageException(write);
                 }
             });
         }
         catch (DbException)
         {
-            throw new EquipmentSimStorageException(false, false);
+            throw new EquipmentSimStorageException(false);
         }
     }
 
@@ -396,14 +395,10 @@ public sealed record EquipmentSimOriginal(int EquipmentId, string PhoneNumber, D
 
 /// <summary>Ошибка чтения или записи SIM без исходного SQL исключения и PIN/PUK.</summary>
 /// <param name="wasDispatched">Провайдеру передана команда записи.</param>
-/// <param name="mayHaveWritten">Исход отправленной записи неизвестен.</param>
-public sealed class EquipmentSimStorageException(bool wasDispatched, bool mayHaveWritten) : InvalidOperationException(mayHaveWritten
-    ? "Результат записи SIM неизвестен. Повторная запись заблокирована до сверки."
-    : wasDispatched ? "Запись SIM отклонена." : "Не удалось прочитать исходные сведения SIM. Команда не отправлена.")
+public sealed class EquipmentSimStorageException(bool wasDispatched) : InvalidOperationException(wasDispatched
+    ? "Запись SIM отклонена."
+    : "Не удалось прочитать исходные сведения SIM. Команда не отправлена.")
 {
     /// <summary>Провайдеру передана команда записи.</summary>
     public bool WasDispatched { get; } = wasDispatched;
-
-    /// <summary>Исход отправленной записи неизвестен.</summary>
-    public bool MayHaveWritten { get; } = mayHaveWritten;
 }

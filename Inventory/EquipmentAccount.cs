@@ -109,19 +109,6 @@ public sealed class EquipmentAccount
         return equipmentId;
     }
 
-    internal static string AttemptBinding(int equipmentId, string login, ReadOnlySpan<byte> nonce)
-    {
-        if (nonce.Length != 32)
-            throw new ArgumentException("Не удалось подтвердить контекст попытки учётной записи.", nameof(nonce));
-        using var stream = new MemoryStream();
-        using var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: true);
-        writer.Write(equipmentId);
-        writer.Write(login);
-        var bytes = stream.GetBuffer().AsSpan(0, checked((int)stream.Length));
-        try { return Convert.ToHexStringLower(HMACSHA256.HashData(nonce, bytes)); }
-        finally { CryptographicOperations.ZeroMemory(bytes); }
-    }
-
     private async Task WriteAsync(DbManager db, string sql, bool compare, bool delete)
     {
         var expected = ExpectedVersion;
@@ -136,7 +123,6 @@ public sealed class EquipmentAccount
             await db.RunDbAsync(async connection =>
             {
                 var dispatched = false;
-                var committing = false;
                 try
                 {
                     if (!compare)
@@ -158,7 +144,6 @@ public sealed class EquipmentAccount
                         if (affected != 1)
                             throw Conflict();
 
-                        committing = true;
                         await transaction.CommitAsync();
                         return affected;
                     }
@@ -167,15 +152,14 @@ public sealed class EquipmentAccount
                         try { await transaction.RollbackAsync(); }
                         catch (Exception error) when (error is DbException or InvalidOperationException)
                         {
-                            throw new EquipmentAccountStorageException(dispatched, dispatched);
+                            throw new EquipmentAccountStorageException(dispatched);
                         }
                         throw;
                     }
                 }
-                catch (DbException error)
+                catch (DbException)
                 {
-                    var unknown = dispatched && (committing || error is not SqlException sqlError || DbManager.IsConnectivityError(sqlError));
-                    throw new EquipmentAccountStorageException(dispatched, unknown);
+                    throw new EquipmentAccountStorageException(dispatched);
                 }
             });
         }
@@ -222,15 +206,10 @@ internal sealed class EquipmentAccountWriteRejectedException(string message) : I
 
 /// <summary>Сбой операции с учётной записью без исходного SQL-исключения или секретных параметров.</summary>
 /// <param name="wasDispatched">Команда записи передана провайдеру.</param>
-/// <param name="mayHaveWritten">После передачи команды её исход остался неизвестен.</param>
-public sealed class EquipmentAccountStorageException(bool wasDispatched, bool mayHaveWritten = false) : InvalidOperationException(mayHaveWritten
-    ? "Результат записи учётной записи неизвестен. Перед повторной записью требуется сверка."
-    : wasDispatched ? "База данных отклонила запись учётной записи."
-        : "Не удалось прочитать данные учётной записи. Команда записи не отправлена.")
+public sealed class EquipmentAccountStorageException(bool wasDispatched) : InvalidOperationException(wasDispatched
+    ? "База данных отклонила запись учётной записи."
+    : "Не удалось прочитать данные учётной записи. Команда записи не отправлена.")
 {
     /// <summary>Команда записи передана провайдеру.</summary>
     public bool WasDispatched { get; } = wasDispatched;
-
-    /// <summary>Команда могла достичь базы данных и её исход не подтверждён.</summary>
-    public bool MayHaveWritten { get; } = mayHaveWritten;
 }

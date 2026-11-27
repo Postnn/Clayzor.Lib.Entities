@@ -175,159 +175,48 @@ public static partial class TerritorialEntityData
         (target is null || target.Id > 0 && target.Id != source.Id && target.Left < target.Right &&
             !(source.Left <= target.Left && target.Right <= source.Right));
 
-    private const string MoveScope = "territory/tree";
-    private const string MoveKind = "territory.move";
-
-    /// <summary>Исход собственной попытки переноса с ключами из серверного журнала.</summary>
-    /// <param name="SourceId">Ключ переносимой территории.</param>
-    /// <param name="TargetId">Ключ выбранного родителя или null для корня.</param>
-    /// <param name="State">Подтверждённое состояние исхода.</param>
-    public sealed record MoveOutcome(int SourceId, int? TargetId, InventoryOperationState State);
-
-    private sealed record MoveOutcomeRow(Guid AttemptId, int EmployeeId, string ConflictKey, string CommandKind,
-        byte State, int? ResultEntityId, string? RelatedScope);
-
-    /// <summary>Читает собственный последний исход переноса после повторной проверки сотрудника и SQL-доступа.</summary>
-    public static async Task<MoveOutcome?> ReadLatestMoveOutcomeAsync(DbManager db, string? principal, int employeeId,
-        CancellationToken ct)
-    {
-        var actor = await RequireMoveActorAsync(db, principal, employeeId, ct);
-        var rows = (await db.QueryRequiredAsync<MoveOutcomeRow>(TerritorialEntitySql.LatestOwnMove, new
-        {
-            EmployeeId = actor.Id,
-            ConflictKey = MoveScope,
-            CommandKind = MoveKind,
-            Unknown = (byte)InventoryOperationState.Unknown,
-        }, ct)).ToArray();
-        if (rows.Length == 0) return null;
-        if (rows is not [var row] || row.AttemptId == Guid.Empty || row.EmployeeId != actor.Id ||
-            row.ConflictKey != MoveScope || row.CommandKind != MoveKind ||
-            !TryReadMoveScope(row.RelatedScope, out var from, out var to) ||
-            MoveAttempt(actor, row.AttemptId, from!, to).OtherScopes?.Single() != row.RelatedScope ||
-            row.State > (byte)InventoryOperationState.Rejected ||
-            row.ResultEntityId != (row.State == (byte)InventoryOperationState.Confirmed ? from!.Id : (int?)null))
-            throw new InvalidOperationException("Не удалось подтвердить запись журнала переноса территории.");
-
-        return new MoveOutcome(from!.Id, to?.Id, (InventoryOperationState)row.State);
-    }
-
-    private static bool TryReadMoveScope(string? scope, out MoveNode? from, out MoveNode? to)
-    {
-        from = to = null;
-        var parts = scope?.Split('/');
-        if (parts is null || parts.Length is not (7 or 10) || parts[0] != "territory" || parts[1] != "move")
-            return false;
-        from = ReadNode(2);
-        if (from is null) return false;
-        if (parts.Length == 7) return parts[6] == "root";
-        to = ReadNode(6);
-        return to is not null && to.Id != from.Id;
-
-        MoveNode? ReadNode(int offset)
-        {
-            if (!ReadInt(parts[offset], out var id) || id <= 0 ||
-                !ReadInt(parts[offset + 2], out var left) || !ReadInt(parts[offset + 3], out var right) || right <= left)
-                return null;
-            if (parts[offset + 1] == "root") return new MoveNode(id, null, left, right);
-            return ReadInt(parts[offset + 1], out var parent) && parent > 0 ? new MoveNode(id, parent, left, right) : null;
-        }
-
-        static bool ReadInt(string text, out int value) => int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value);
-    }
-
-    /// <summary>Проверяет единый серверный слот дерева, включая попытки других сотрудников.</summary>
-    public static Task<bool> IsMovePendingAsync(DbManager db, CancellationToken ct) =>
-        InventoryOperationJournal.IsScopePendingAsync(db, MoveScope, ct);
-
-    /// <summary>Читает исход точной собственной попытки у текущего сотрудника с правом переноса.</summary>
-    public static async Task<InventoryOperationReceipt?> ReadMoveReceiptAsync(DbManager db, string? principal,
-        int employeeId, Guid attemptId, MoveNode source, MoveNode? target, CancellationToken ct)
-    {
-        var actor = await RequireMoveActorAsync(db, principal, employeeId, ct);
-        return await InventoryOperationJournal.ReadAttemptAsync(db, MoveAttempt(actor, attemptId, source, target), ct);
-    }
-
-    /// <summary>Учитывает прежние неподтверждённые переносы после проверки доступа к дереву.</summary>
-    public static async Task ImportLegacyMoveOperationsAsync(DbManager db, string? principal, int employeeId,
-        IReadOnlyCollection<(Guid AttemptId, MoveNode From, MoveNode? To)> evidence, CancellationToken ct)
-    {
-        if (evidence.Count == 0) return;
-        var actor = await RequireMoveActorAsync(db, principal, employeeId, ct);
-        var attempts = new List<InventoryOperationJournal.Attempt>(evidence.Count);
-        foreach (var (id, from, to) in evidence.Distinct().OrderBy(item => item.AttemptId))
-        {
-            if (!ValidNode(from) || to is not null && (!ValidNode(to) || to.Id == from.Id))
-                throw new TerritorialEntityRuleException("Некорректный снимок прежнего переноса.");
-            attempts.Add(MoveAttempt(actor, id, from, to));
-        }
-
-        await InventoryOperationJournal.ImportLegacyAsync(db, attempts, ct);
-
-        static bool ValidNode(MoveNode? node) => node is { Id: > 0 } && node.ParentId is not <= 0 &&
-            node.Left >= 0 && node.Right > node.Left;
-    }
-
     internal static bool IsKnownMoveRejection(int number) => number is 229 or 547 or 1205 or 3609 or 50000;
 
-    /// <summary>Фиксирует изменение родителя и квитанцию одной транзакцией. Границы L/R обслуживает штатный SQL-триггер.</summary>
-    public static async Task<InventoryOperationReceipt> ReparentAsync(DbManager db, string? principal, int employeeId,
-        Guid attemptId, MoveNode source, MoveNode? target, CancellationToken ct)
+    /// <summary>Изменяет родителя в транзакции. Границы L/R обслуживает штатный SQL-триггер.</summary>
+    public static async Task ReparentAsync(DbManager db, string? principal, int employeeId,
+        MoveNode source, MoveNode? target, CancellationToken ct)
     {
         if (!CanReparent(source, target)) throw new TerritorialEntityRuleException("Недопустимый перенос территории.");
-        var actor = await RequireMoveActorAsync(db, principal, employeeId, ct);
-        var attempt = MoveAttempt(actor, attemptId, source, target);
-        if (await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct) is { } previous)
-            return RequireMoveResult(previous, source.Id);
-
-        InventoryOperationReceipt receipt;
-        try
+        await RequireMoveActorAsync(db, principal, employeeId, ct);
+        await WriteAsync(db, async (connection, transaction) =>
         {
-            receipt = await InventoryOperationJournal.RunSqlAsync<TerritorialEntityRuleException>(db, attempt,
-                async (connection, transaction, token) =>
+            var currentActor = await Employee.GetCurrentAsync(connection, transaction, principal, ct);
+            var access = currentActor?.Id == employeeId
+                ? await connection.QuerySingleAsync<TerritorialEntityAccess>(new CommandDefinition(
+                    TerritorialEntitySql.Access, transaction: transaction, cancellationToken: ct))
+                : null;
+            if (access?.TerritoryUpdate != true)
+                throw new TerritorialEntityRuleException("Сотрудник или право переноса территории не подтверждены.");
+
+            Task<MoveNode?> Read(int id) => ReadSingleAsync<MoveNode>(connection, transaction,
+                TerritorialEntitySql.ReadMoveNode, new { Id = id }, ct);
+            var current = await Read(source.Id);
+            var parent = target is null ? null : await Read(target.Id);
+            if (current != source || parent != target) throw Changed();
+            try
+            {
+                await connection.ExecuteAsync(new CommandDefinition(TerritorialEntitySql.Reparent,
+                    new { source.Id, ParentId = target?.Id }, transaction, cancellationToken: ct));
+            }
+            catch (Microsoft.Data.SqlClient.SqlException error) when (IsKnownMoveRejection(error.Number))
+            {
+                throw new TerritorialEntityRuleException(error.Number switch
                 {
-                    var currentActor = await Employee.GetCurrentAsync(connection, transaction, principal, token);
-                    var access = currentActor?.Id == employeeId
-                        ? await connection.QuerySingleAsync<TerritorialEntityAccess>(new CommandDefinition(
-                            TerritorialEntitySql.Access, transaction: transaction, cancellationToken: token))
-                        : null;
-                    if (access?.TerritoryUpdate != true)
-                        throw new TerritorialEntityRuleException("Сотрудник или право переноса территории не подтверждены.");
-
-                    Task<MoveNode?> Read(int id) => ReadSingleAsync<MoveNode>(connection, transaction,
-                        TerritorialEntitySql.ReadMoveNode, new { Id = id }, token);
-                    var current = await Read(source.Id);
-                    var parent = target is null ? null : await Read(target.Id);
-                    if (current != source || parent != target) throw Changed();
-                    try
-                    {
-                        await connection.ExecuteAsync(new CommandDefinition(TerritorialEntitySql.Reparent,
-                            new { source.Id, ParentId = target?.Id }, transaction, cancellationToken: token));
-                    }
-                    catch (Microsoft.Data.SqlClient.SqlException error) when (IsKnownMoveRejection(error.Number))
-                    {
-                        // The coordinator marks a rejection only after it has confirmed rollback of the transaction.
-                        throw new TerritorialEntityRuleException(error.Number switch
-                        {
-                            229 => "Нет разрешения на изменение родителя территории.",
-                            1205 => "Перенос отменён из-за одновременного изменения. Обновите дерево.",
-                            _ => "База отклонила перенос. Проверьте родителя, связи и телефонный код территории."
-                        });
-                    }
-                    var saved = await Read(source.Id);
-                    if (saved is null || saved.ParentId != target?.Id)
-                        throw new TerritorialEntityRuleException("База не подтвердила перенос территории.");
-                    return source.Id;
-                }, ct);
-        }
-        catch (Exception error) when (!ct.IsCancellationRequested &&
-            error is not (TerritorialEntityRuleException or InventoryOperationPendingException or InventoryOperationReservationException))
-        {
-            var observed = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
-            if (observed is not { State: InventoryOperationState.Confirmed, ResultEntityId: var id } || id != source.Id)
-                throw;
-            return observed;
-        }
-        return RequireMoveResult(receipt, source.Id);
+                    229 => "Нет разрешения на изменение родителя территории.",
+                    1205 => "Перенос отменён из-за одновременного изменения. Обновите дерево.",
+                    _ => "База отклонила перенос. Проверьте родителя, связи и телефонный код территории."
+                });
+            }
+            var saved = await Read(source.Id);
+            if (saved is null || saved.ParentId != target?.Id)
+                throw new TerritorialEntityRuleException("База не подтвердила перенос территории.");
+            return true;
+        }, ct);
     }
 
     private static async Task<Employee> RequireMoveActorAsync(DbManager db, string? principal, int employeeId, CancellationToken ct)
@@ -338,70 +227,16 @@ public static partial class TerritorialEntityData
         return actor;
     }
 
-    private static InventoryOperationJournal.Attempt MoveAttempt(Employee actor, Guid attemptId, MoveNode source, MoveNode? target)
-    {
-        static string NodeKey(MoveNode node) =>
-            FormattableString.Invariant($"{node.Id}/{(node.ParentId is { } parent ? FormattableString.Invariant($"{parent}") : "root")}/{node.Left}/{node.Right}");
-        var targetKey = target is null ? "root" : NodeKey(target);
-        return InventoryOperationJournal.ForEmployee(actor, attemptId, MoveScope, MoveKind,
-            [$"territory/move/{NodeKey(source)}/{targetKey}"]);
-    }
-
-    private static InventoryOperationReceipt RequireMoveResult(InventoryOperationReceipt receipt, int sourceId)
-    {
-        if (receipt.State == InventoryOperationState.Rejected)
-            throw new TerritorialEntityRuleException("Эта попытка переноса уже отклонена.");
-        if (receipt.State != InventoryOperationState.Confirmed || receipt.ResultEntityId != sourceId)
-            throw new InventoryOperationPendingException();
-        return receipt;
-    }
-
-    /// <summary>Читает исход собственной попытки карточки по её точному маршруту.</summary>
-    public static async Task<InventoryOperationReceipt?> ReadTerritoryWriteReceiptAsync(DbManager db, string? principal,
-        int employeeId, Guid attemptId, string operation, int territoryId, int? parentId, CancellationToken ct)
-    {
-        var actor = await RequireTerritoryCardWriterAsync(db, principal, employeeId, operation, ct);
-        var attempt = TerritoryCardAttempt(actor, attemptId, operation, territoryId, parentId);
-        var receipt = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
-        return receipt is { State: InventoryOperationState.Confirmed } && !IsTerritoryResult(receipt, territoryId)
-            ? null : receipt;
-    }
-
-    /// <summary>Учитывает только прежние метаданные операций из доступной области дерева.</summary>
-    public static async Task ImportLegacyTerritoryCardOperationsAsync(DbManager db, string? principal, int employeeId,
-        IReadOnlyCollection<(Guid AttemptId, string Operation, int TerritoryId, int? ParentId)> evidence, CancellationToken ct)
-    {
-        if (evidence.Count == 0) return;
-        var actor = await Employee.GetCurrentAsync(db, principal, ct);
-        if (actor is null || actor.Id != employeeId) throw Denied();
-        var access = await ReadAccessAsync(db, actor, ct);
-        var attempts = new List<InventoryOperationJournal.Attempt>(evidence.Count);
-        foreach (var (attemptId, operation, id, parentId) in evidence.Distinct().OrderBy(item => item.AttemptId))
-        {
-            var validKey = operation switch
-            {
-                "territory.create" => id == 0 && parentId is not <= 0,
-                "territory.update" or "territory.delete" => id > 0 && parentId is not <= 0,
-                _ => false,
-            };
-            if (attemptId == Guid.Empty || !validKey)
-                throw new TerritorialEntityRuleException("Прежняя попытка записи территории требует сверки.");
-            if (!CanWriteTerritoryCard(access, operation)) throw Denied();
-            attempts.Add(TerritoryCardAttempt(actor, attemptId, operation, id, parentId));
-        }
-        await InventoryOperationJournal.ImportLegacyAsync(db, attempts, ct);
-    }
-
     /// <summary>Обновляет поля территории. Parent и вложенные множества принадлежат базе.</summary>
     public static async Task<TerritorialEntityRecord> UpdateTerritoryAsync(DbManager db, string? principal,
-        int employeeId, Guid attemptId, TerritorialEntityRecord original, TerritorialEntityRecord draft, CancellationToken ct = default)
+        int employeeId, TerritorialEntityRecord original, TerritorialEntityRecord draft, CancellationToken ct = default)
     {
         if (draft.Id <= 0 || draft.Id != original.Id || draft.ParentId != original.ParentId)
             throw new TerritorialEntityRuleException("Исходная территория или родитель изменились.");
         CheckValidation(TerritorialEntityRules.Validate(draft));
         TerritorialEntityRecord? written = null;
-        var receipt = await RunTerritoryCardWriteAsync(db, principal, employeeId, attemptId, "territory.update",
-            draft.Id, null, async (connection, transaction, token) =>
+        await RunTerritoryCardWriteAsync(db, principal, employeeId, "territory.update",
+            async (connection, transaction, token) =>
         {
             var key = new { draft.Id };
             var current = await ReadSingleAsync<TerritorialEntityRecord>(connection, transaction,
@@ -421,19 +256,19 @@ public static partial class TerritorialEntityData
             written = saved;
             return saved.Id;
         }, ct);
-        return written ?? await ReadConfirmedTerritoryCardAsync(db, receipt, ct);
+        return written!;
     }
 
-    /// <summary>Создаёт территорию штатным INSERT и принимает только возвращённый и проверенный SQL ключ.</summary>
+    /// <summary>Создаёт территорию штатным INSERT и возвращает проверенную запись.</summary>
     public static async Task<TerritorialEntityRecord> CreateTerritoryAsync(DbManager db, string? principal,
-        int employeeId, Guid attemptId, TerritorialEntityRecord draft, CancellationToken ct = default)
+        int employeeId, TerritorialEntityRecord draft, CancellationToken ct = default)
     {
         if (draft.Id != 0 || draft.ParentId is <= 0)
             throw new TerritorialEntityRuleException("Некорректный ключ новой территории или родителя.");
         CheckValidation(TerritorialEntityRules.Validate(draft));
         TerritorialEntityRecord? written = null;
-        var receipt = await RunTerritoryCardWriteAsync(db, principal, employeeId, attemptId, "territory.create",
-            0, draft.ParentId, async (connection, transaction, token) =>
+        await RunTerritoryCardWriteAsync(db, principal, employeeId, "territory.create",
+            async (connection, transaction, token) =>
         {
             if (draft.ParentId is { } parent && await connection.ExecuteScalarAsync<int?>(new CommandDefinition(
                     TerritorialEntitySql.ReadMoveNode, new { Id = parent }, transaction, cancellationToken: token)) != parent)
@@ -457,16 +292,16 @@ public static partial class TerritorialEntityData
             written = saved;
             return saved.Id;
         }, ct);
-        return written ?? await ReadConfirmedTerritoryCardAsync(db, receipt, ct);
+        return written!;
     }
 
     /// <summary>Удаляет проверенный исходный снимок штатной процедурой без замещающей территории.</summary>
-    public static Task<InventoryOperationReceipt> DeleteTerritoryAsync(DbManager db, string? principal,
-        int employeeId, Guid attemptId, TerritorialEntityRecord original, CancellationToken ct = default)
+    public static async Task DeleteTerritoryAsync(DbManager db, string? principal,
+        int employeeId, TerritorialEntityRecord original, CancellationToken ct = default)
     {
         if (original.Id <= 0) throw new TerritorialEntityRuleException("Некорректный ключ территории.");
-        return RunTerritoryCardWriteAsync(db, principal, employeeId, attemptId, "territory.delete",
-            original.Id, null, async (connection, transaction, token) =>
+        await RunTerritoryCardWriteAsync(db, principal, employeeId, "territory.delete",
+            async (connection, transaction, token) =>
         {
             var key = new { original.Id };
             var read = string.Format(TerritorialEntitySql.TerritoryRead, RowLock);
@@ -478,54 +313,28 @@ public static partial class TerritorialEntityData
                 КодТерриторииЗамещающей = 0,
                 Выполнить = 1,
             }, transaction, commandType: CommandType.StoredProcedure, cancellationToken: token));
-            if (await connection.ExecuteScalarAsync<int>(new CommandDefinition(SQLQueries.SELECT_ActiveJournalTransaction,
-                    transaction: transaction, cancellationToken: token)) != 1)
-                throw new InvalidOperationException("Транзакция удаления территории не подтверждена.");
             if (await ReadSingleAsync<TerritorialEntityRecord>(connection, transaction, read, key, token) is not null)
                 throw new TerritorialEntityRuleException("База не подтвердила удаление территории.");
             return original.Id;
         }, ct);
     }
 
-    private static async Task<InventoryOperationReceipt> RunTerritoryCardWriteAsync(DbManager db, string? principal,
-        int employeeId, Guid attemptId, string operation, int id, int? parentId,
-        Func<DbConnection, DbTransaction, CancellationToken, Task<int?>> write, CancellationToken ct)
+    private static async Task RunTerritoryCardWriteAsync(DbManager db, string? principal,
+        int employeeId, string operation, Func<DbConnection, DbTransaction, CancellationToken, Task<int?>> write,
+        CancellationToken ct)
     {
-        var actor = await RequireTerritoryCardWriterAsync(db, principal, employeeId, operation, ct);
-        var attempt = TerritoryCardAttempt(actor, attemptId, operation, id, parentId);
-        if (await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct) is { } previous)
-            return EnsureTerritoryResult(previous, id);
-
-        InventoryOperationReceipt receipt;
-        try
+        await RequireTerritoryCardWriterAsync(db, principal, employeeId, operation, ct);
+        await WriteAsync(db, async (connection, transaction) =>
         {
-            receipt = await InventoryOperationJournal.RunSqlAsync<TerritorialEntityRuleException>(db, attempt,
-                async (connection, transaction, token) =>
-                {
-                    var current = await Employee.GetCurrentAsync(connection, transaction, principal, token);
-                    var access = current?.Id == employeeId
-                        ? await connection.QuerySingleAsync<TerritorialEntityAccess>(new CommandDefinition(
-                            TerritorialEntitySql.Access, transaction: transaction, cancellationToken: token))
-                        : null;
-                    if (access is null || !CanWriteTerritoryCard(access, operation))
-                        throw new TerritorialEntityRuleException("Текущий сотрудник или право записи территории не подтверждены.");
-                    return await write(connection, transaction, token);
-                }, ct);
-        }
-        catch (Exception exception) when (!ct.IsCancellationRequested &&
-            exception is not (TerritorialEntityRuleException or InventoryOperationReservationException or InventoryOperationPendingException))
-        {
-            InventoryOperationReceipt? observed;
-            try { observed = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct); }
-            catch (Exception readError) when (readError is not OperationCanceledException)
-            {
-                observed = null;
-            }
-            if (observed is not { State: InventoryOperationState.Confirmed } || !IsTerritoryResult(observed, id))
-                throw new InvalidOperationException("Результат записи территории требует сверки.");
-            return observed;
-        }
-        return EnsureTerritoryResult(receipt, id);
+            var current = await Employee.GetCurrentAsync(connection, transaction, principal, ct);
+            var access = current?.Id == employeeId
+                ? await connection.QuerySingleAsync<TerritorialEntityAccess>(new CommandDefinition(
+                    TerritorialEntitySql.Access, transaction: transaction, cancellationToken: ct))
+                : null;
+            if (access is null || !CanWriteTerritoryCard(access, operation))
+                throw new TerritorialEntityRuleException("Текущий сотрудник или право записи территории не подтверждены.");
+            return await write(connection, transaction, ct);
+        }, ct);
     }
 
     private static async Task<Employee> RequireTerritoryCardWriterAsync(DbManager db, string? principal, int employeeId,
@@ -545,32 +354,6 @@ public static partial class TerritorialEntityData
         "territory.delete" => access.TerritoryDelete,
         _ => false,
     };
-
-    private static InventoryOperationJournal.Attempt TerritoryCardAttempt(Employee actor, Guid attemptId, string operation,
-        int id, int? parentId)
-    {
-        var cardScope = operation == "territory.create"
-            ? FormattableString.Invariant($"territory/card/new/{parentId ?? 0}")
-            : FormattableString.Invariant($"territory/card/{id}");
-        return InventoryOperationJournal.ForEmployee(actor, attemptId, "territory/tree", operation, [cardScope]);
-    }
-
-    private static bool IsTerritoryResult(InventoryOperationReceipt receipt, int id) =>
-        receipt.ResultEntityId is > 0 && (id == 0 || receipt.ResultEntityId == id);
-
-    private static InventoryOperationReceipt EnsureTerritoryResult(InventoryOperationReceipt receipt, int id)
-    {
-        if (receipt.State == InventoryOperationState.Rejected)
-            throw new TerritorialEntityRuleException("Эта попытка записи территории уже отклонена.");
-        if (receipt.State != InventoryOperationState.Confirmed || !IsTerritoryResult(receipt, id))
-            throw new InventoryOperationPendingException();
-        return receipt;
-    }
-
-    private static async Task<TerritorialEntityRecord> ReadConfirmedTerritoryCardAsync(DbManager db,
-        InventoryOperationReceipt receipt, CancellationToken ct) =>
-        await ReadTerritoryAsync(db, receipt.ResultEntityId!.Value, ct) ??
-        throw new InvalidOperationException("База подтвердила запись. Актуальная карточка недоступна для чтения.");
 
     private static Task<T?> ReadSingleAsync<T>(DbConnection connection, DbTransaction transaction, string sql, object args, CancellationToken ct) =>
         connection.QuerySingleOrDefaultAsync<T>(new CommandDefinition(sql, args, transaction, cancellationToken: ct));

@@ -5,7 +5,7 @@ using Dapper;
 
 namespace Clayzor.Lib.Entities.Inventory;
 
-internal static class EquipmentPeriodJournalWrite
+internal static class EquipmentPeriodWrite
 {
     internal static DateTime NormalizeStartUtc(DateTime value) => DateTime.SpecifyKind(new SqlDateTime(value).Value, DateTimeKind.Utc);
 

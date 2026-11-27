@@ -136,92 +136,72 @@ public sealed class EquipmentModel : ILookupEntity
     /// <summary>Фиксирует исходную версию, тип и шаблон независимо от дальнейших изменений полей.</summary>
     public EquipmentModelWriteBaseline CaptureWriteBaseline() => new(Id, EquipmentTypeId, ChangedAt, PhoneTemplate);
 
-    private const string ModelSaveKind = "equipment-model.save";
     private const Роли ModelWriteRole = Роли.Специалист_по_инвентаризации_оборудования;
     private const string ModelVersionConflict = "Модель или её шаблон были изменены либо удалены. Перечитайте данные и проверьте свой ввод.";
 
-    /// <summary>Проверяет модель и права, атомарно фиксируя запись и её результат в серверном журнале.</summary>
-    public async Task<int> SaveAsync(DbManager db, string? windowsPrincipal, int expectedEmployeeId, Guid attemptId,
-        EquipmentModelWriteBaseline? baseline = null, int? confirmedTypeId = null, CancellationToken cancellationToken = default,
-        EquipmentModelWriteBoundary? writeBoundary = null)
+    /// <summary>Проверяет модель, права и исходную версию, после чего сохраняет её в транзакции.</summary>
+    public async Task<int> SaveAsync(DbManager db, string? windowsPrincipal, int expectedEmployeeId,
+        EquipmentModelWriteBaseline? baseline = null, int? confirmedTypeId = null, CancellationToken cancellationToken = default)
     {
         var submitted = (EquipmentModel)MemberwiseClone();
         if (submitted.Validate() is { } validation)
             throw new InvalidOperationException(validation);
 
-        var actor = await RequireModelWriterAsync(db, windowsPrincipal, expectedEmployeeId, cancellationToken);
-        var attempt = InventoryOperationJournal.ForEmployee(actor, attemptId, ModelConflictKey(submitted.Id), ModelSaveKind);
-        if (await InventoryOperationJournal.ReadAttemptAsync(db, attempt, cancellationToken) is { } previous)
-            return AcceptReceipt(previous);
-
+        await RequireModelWriterAsync(db, windowsPrincipal, expectedEmployeeId, cancellationToken);
         var clearTemplate = baseline is not null && baseline.EquipmentTypeId != submitted.EquipmentTypeId &&
             submitted.EquipmentTypeId != (int)ТипыОборудования.IP_телефон;
         await db.RunDbAsync(connection => CheckProposalAsync(connection, null, cancellationToken));
 
-        if (writeBoundary is not null)
-            await writeBoundary.PrepareAsync(cancellationToken);
-
         try
         {
-            var receipt = await InventoryOperationJournal.RunSqlAsync<ModelWriteRejectedException>(db, attempt,
-                async (connection, transaction, token) =>
+            Id = await db.RunDbAsync(async connection =>
+            {
+                await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+                try
                 {
-                    try
-                    {
-                        var fresh = await Employee.GetCurrentWithRolesAsync(connection, transaction, windowsPrincipal, token);
-                        ValidateWriter(fresh, expectedEmployeeId, ModelWriteRole);
-                        await CheckProposalAsync(connection, transaction, token);
-                        token.ThrowIfCancellationRequested();
-                        writeBoundary?.BeforeDispatch();
-                    }
-                    catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or DbException or
-                        TimeoutException or OperationCanceledException)
-                    {
-                        throw new ModelWriteRejectedException(error is DbException
-                            ? "Не удалось проверить актуальные данные модели. Запись не начата." : error.Message, error);
-                    }
+                    var fresh = await Employee.GetCurrentWithRolesAsync(connection, transaction, windowsPrincipal, cancellationToken);
+                    ValidateWriter(fresh, expectedEmployeeId, ModelWriteRole);
+                    await CheckProposalAsync(connection, transaction, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                catch (Exception error) when (error is InvalidOperationException or UnauthorizedAccessException or DbException or
+                    TimeoutException or OperationCanceledException)
+                {
+                    throw new ModelWriteRejectedException(error is DbException
+                        ? "Не удалось проверить актуальные данные модели. Запись не начата." : error.Message, error);
+                }
 
-                    if (submitted.Id == 0)
-                    {
-                        var inserted = await connection.ExecuteScalarAsync<int?>(
-                            Command(SQLQueries.INSERT_МоделиОборудования_Журнал, submitted.SaveParameters(), transaction, token));
-                        if (inserted is not > 0)
-                            throw new ModelWriteRejectedException("База данных не вернула идентификатор созданной модели.");
-                        return inserted;
-                    }
-
+                int resultId;
+                if (submitted.Id == 0)
+                {
+                    var inserted = await connection.ExecuteScalarAsync<int?>(
+                        Command(SQLQueries.INSERT_МоделиОборудования, submitted.SaveParameters(), transaction, cancellationToken));
+                    if (inserted is not > 0)
+                        throw new ModelWriteRejectedException("База данных не вернула идентификатор созданной модели.");
+                    resultId = inserted.Value;
+                }
+                else
+                {
                     var parameters = new DynamicParameters(submitted.SaveParameters());
                     AddExpectedVersion(parameters, baseline!);
                     if (clearTemplate)
                         AddExpectedTemplate(parameters, baseline!);
                     var sql = clearTemplate ? SQLQueries.UPDATE_МоделиОборудования_ОчиститьШаблон : SQLQueries.UPDATE_МоделиОборудования;
-                    var affected = await connection.ExecuteScalarAsync<int?>(Command(sql, parameters, transaction, token));
+                    var affected = await connection.ExecuteScalarAsync<int?>(Command(sql, parameters, transaction, cancellationToken));
                     if (affected != 1)
                         throw new ModelWriteRejectedException(affected == 0 ? ModelVersionConflict :
                             "База данных не подтвердила обновление одной модели.");
-                    return submitted.Id;
-                }, cancellationToken);
-            return AcceptReceipt(receipt);
+                    resultId = submitted.Id;
+                }
+
+                await transaction.CommitAsync(CancellationToken.None);
+                return resultId;
+            });
+            return Id;
         }
         catch (ModelWriteRejectedException error)
         {
-            writeBoundary?.OnKnownNoEffect();
             throw new InvalidOperationException(error.Message, error);
-        }
-
-        int AcceptReceipt(InventoryOperationReceipt receipt)
-        {
-            if (receipt.State == InventoryOperationState.Rejected)
-            {
-                writeBoundary?.OnKnownNoEffect();
-                throw new InvalidOperationException("Эта попытка сохранения модели ранее отклонена.");
-            }
-            if (receipt.State != InventoryOperationState.Confirmed)
-                throw new InventoryOperationPendingException();
-            if (receipt.ResultEntityId is not > 0 || submitted.Id > 0 && receipt.ResultEntityId != submitted.Id)
-                throw new InvalidOperationException("Журнал не подтвердил идентификатор сохранённой модели.");
-            Id = receipt.ResultEntityId.Value;
-            return Id;
         }
 
         async Task<bool> CheckProposalAsync(DbConnection connection, DbTransaction? transaction, CancellationToken token)
@@ -258,50 +238,6 @@ public sealed class EquipmentModel : ILookupEntity
         }
     }
 
-    /// <summary>Читает только собственный последующий серверный исход и наличие незавершённой попытки модели.</summary>
-    public static async Task<(InventoryOperationReceipt? Latest, bool HasPending)> ReadSaveJournalAsync(DbManager db,
-        string? windowsPrincipal, int expectedEmployeeId, int id, CancellationToken ct)
-    {
-        var actor = await RequireModelWriterAsync(db, windowsPrincipal, expectedEmployeeId, ct);
-        var key = ModelConflictKey(id);
-        InventoryOperationReceipt? latest = null;
-        try
-        {
-            latest = await InventoryOperationJournal.ReadLatestAsync(db, actor, key, ModelSaveKind, ct);
-        }
-        catch (Exception error) when (error is System.Data.Common.DbException or TimeoutException or InvalidOperationException)
-        {
-            // The informational result is independent of the required pending check.
-        }
-        return (latest, await InventoryOperationJournal.IsScopePendingAsync(db, key, ct));
-    }
-
-    /// <summary>Сверяет точную серверную попытку сохранения модели без повторной записи.</summary>
-    public static async Task<InventoryOperationReceipt?> ReadSaveReceiptAsync(DbManager db, string? windowsPrincipal,
-        int expectedEmployeeId, int id, Guid attemptId, CancellationToken ct)
-    {
-        var actor = await RequireModelWriterAsync(db, windowsPrincipal, expectedEmployeeId, ct);
-        return await InventoryOperationJournal.ReadAttemptAsync(db,
-            InventoryOperationJournal.ForEmployee(actor, attemptId, ModelConflictKey(id), ModelSaveKind), ct);
-    }
-
-    /// <summary>Учитывает прежние неподтверждённые попытки сохранения доступной модели.</summary>
-    public static async Task ImportLegacySaveOperationsAsync(DbManager db, string? principal,
-        int expectedEmployeeId, int id, IReadOnlyCollection<Guid> attempts, CancellationToken ct)
-    {
-        if (attempts.Count == 0) return;
-        ArgumentOutOfRangeException.ThrowIfNegative(id);
-        var actor = await RequireModelWriterAsync(db, principal, expectedEmployeeId, ct);
-        if (id > 0 && await GetForEditAsync(db, id, ct) is null)
-            throw new UnauthorizedAccessException("Исходная модель прежней операции недоступна.");
-
-        await InventoryOperationJournal.ImportLegacyAsync(db, attempts.Distinct().Order()
-            .Select(attemptId => InventoryOperationJournal.ForEmployee(actor, attemptId, ModelConflictKey(id), ModelSaveKind))
-            .ToArray(), ct);
-    }
-
-    private static string ModelConflictKey(int id) => id == 0 ? "model/new" : "model/" + id.ToString(CultureInfo.InvariantCulture);
-
     private static async Task<Employee> RequireModelWriterAsync(DbManager db, string? principal, int expectedEmployeeId,
         CancellationToken ct)
     {
@@ -325,202 +261,24 @@ public sealed class EquipmentModel : ILookupEntity
 
     /// <summary>Проверяет актуальный тип и права перед условной записью шаблона существующего IP-телефона.</summary>
     public async Task SavePhoneTemplateAsync(DbManager db, string? windowsPrincipal, int expectedEmployeeId,
-        EquipmentModelWriteBaseline baseline, CancellationToken cancellationToken = default,
-        EquipmentModelWriteBoundary? writeBoundary = null)
+        EquipmentModelWriteBaseline baseline, CancellationToken cancellationToken = default)
     {
         var id = Id;
-        var template = PhoneTemplate;
         EnsurePrincipalPresent(windowsPrincipal, expectedEmployeeId);
         if (id <= 0 || baseline.Id != id || baseline.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
             throw new InvalidOperationException("Исходная версия шаблона недоступна.");
         var stored = await GetForEditAsync(db, id, cancellationToken);
         if (stored?.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
             throw new InvalidOperationException("Модель не найдена или больше не относится к типу IP-телефон.");
-        if (writeBoundary is not null)
-            await writeBoundary.PrepareAsync(cancellationToken);
         await RequireWriterAsync(db, windowsPrincipal, expectedEmployeeId, Роли.Дежурный_инженер, cancellationToken);
 
         var parameters = new DynamicParameters();
         parameters.Add("Id", id);
-        parameters.Add("PhoneTemplate", template, DbType.String, size: -1);
+        parameters.Add("PhoneTemplate", PhoneTemplate, DbType.String, size: -1);
         AddExpectedVersion(parameters, baseline);
         AddExpectedTemplate(parameters, baseline);
-        if (writeBoundary is null)
-        {
-            await ExecuteVersionedUpdateAsync(db, SQLQueries.UPDATE_МоделиОборудования_ШаблонТелефона,
-                parameters, cancellationToken);
-            return;
-        }
-
-        var affected = await db.RunDbAsync(async connection =>
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            writeBoundary.BeforeDispatch();
-            try
-            {
-                return await connection.ExecuteScalarAsync<int?>(new CommandDefinition(
-                    SQLQueries.UPDATE_МоделиОборудования_ШаблонТелефона, parameters,
-                    commandType: CommandType.Text, cancellationToken: cancellationToken));
-            }
-            catch (System.Data.Common.DbException)
-            {
-                // Текст SQL-ошибки может содержать данные параметров. Форма получает только безопасное состояние.
-                throw new InvalidOperationException("Не удалось подтвердить результат записи шаблона.");
-            }
-        });
-        if (affected == 0)
-        {
-            writeBoundary.OnKnownNoEffect();
-            throw new InvalidOperationException("Модель или её шаблон были изменены либо удалены. Перечитайте данные и проверьте свой ввод.");
-        }
-        if (affected != 1)
-            throw new InvalidOperationException("База данных не подтвердила результат обновления модели.");
-    }
-
-    private const string PhoneTemplateWriteKind = "equipment-phone-template.save";
-
-    internal static Task<bool> HasPendingPhoneTemplateWriteAsync(DbManager db, Employee actor, int modelId, CancellationToken ct)
-    {
-        RequireTemplateWriter(actor, actor.Id);
-        return InventoryOperationJournal.IsScopePendingAsync(db, PhoneTemplateScope(modelId), ct);
-    }
-
-    internal static Task<InventoryOperationReceipt?> ReadPhoneTemplateReceiptAsync(DbManager db, Employee actor,
-        int modelId, Guid attemptId, CancellationToken ct)
-    {
-        RequireTemplateWriter(actor, actor.Id);
-        return InventoryOperationJournal.ReadAttemptAsync(db, PhoneTemplateAttempt(actor, modelId, attemptId), ct);
-    }
-
-    internal static Task<InventoryOperationReceipt?> ReadLatestPhoneTemplateReceiptAsync(DbManager db, Employee actor,
-        EquipmentModel model, CancellationToken ct)
-    {
-        RequireTemplateWriter(actor, actor.Id);
-        if (model.Id <= 0 || model.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
-            throw new UnauthorizedAccessException("Модель шаблона недоступна.");
-        return InventoryOperationJournal.ReadLatestAsync(db, actor, PhoneTemplateScope(model.Id), PhoneTemplateWriteKind, ct);
-    }
-
-    /// <summary>Учитывает прежние неподтверждённые попытки изменения шаблона доступной IP-модели.</summary>
-    public static async Task ImportLegacyPhoneTemplateOperationsAsync(DbManager db, string? principal,
-        int expectedEmployeeId, int modelId, IReadOnlyCollection<Guid> attempts, CancellationToken ct)
-    {
-        if (attempts.Count == 0) return;
-        EnsurePrincipalPresent(principal, expectedEmployeeId);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(modelId);
-        var actor = RequireTemplateWriter(await Employee.GetCurrentWithRolesAsync(db, principal, ct), expectedEmployeeId);
-        if ((await GetForEditAsync(db, modelId, ct))?.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
-            throw new UnauthorizedAccessException("Модель прежней операции с шаблоном недоступна.");
-
-        await InventoryOperationJournal.ImportLegacyAsync(db, attempts.Distinct().Order()
-            .Select(attemptId => PhoneTemplateAttempt(actor, modelId, attemptId)).ToArray(), ct);
-    }
-
-    internal async Task<InventoryOperationReceipt> SaveJournaledPhoneTemplateAsync(DbManager db, string? principal, int expectedEmployeeId,
-        EquipmentModelWriteBaseline baseline, Guid attemptId, EquipmentModelWriteBoundary boundary, CancellationToken ct)
-    {
-        var id = Id;
-        var template = PhoneTemplate;
-        EnsurePrincipalPresent(principal, expectedEmployeeId);
-        if (id <= 0 || baseline.Id != id || baseline.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
-            throw new PhoneTemplateWriteRejectedException("Исходная версия шаблона недоступна.");
-
-        var stored = await GetForEditAsync(db, id, ct);
-        var actor = RequireTemplateWriter(await Employee.GetCurrentWithRolesAsync(db, principal, ct), expectedEmployeeId);
-        var attempt = PhoneTemplateAttempt(actor, id, attemptId);
-        if (await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct) is { } previous)
-            return RequireReceipt(previous);
-        if (stored?.EquipmentTypeId != (int)ТипыОборудования.IP_телефон)
-            throw new PhoneTemplateWriteRejectedException("Модель не найдена или больше не относится к типу IP-телефон.");
-
-        await boundary.PrepareAsync(ct);
-        var parameters = new DynamicParameters();
-        parameters.Add("Id", id);
-        parameters.Add("PhoneTemplate", template, DbType.String, size: -1);
-        AddExpectedVersion(parameters, baseline);
-        AddExpectedTemplate(parameters, baseline);
-
-        InventoryOperationReceipt receipt;
-        try
-        {
-            receipt = await InventoryOperationJournal.RunSqlAsync<PhoneTemplateWriteRejectedException>(db, attempt,
-                async (connection, transaction, token) =>
-                {
-                    RequireTemplateWriter(await Employee.GetCurrentWithRolesAsync(connection, transaction, principal, token),
-                        expectedEmployeeId);
-                    token.ThrowIfCancellationRequested();
-                    try { boundary.BeforeDispatch(); }
-                    catch (InvalidOperationException error) { throw new PhoneTemplateWriteRejectedException(error.Message); }
-
-                    int? affected;
-                    try
-                    {
-                        affected = await connection.ExecuteScalarAsync<int?>(new CommandDefinition(
-                            SQLQueries.UPDATE_МоделиОборудования_ШаблонТелефона, parameters, transaction,
-                            commandType: CommandType.Text, cancellationToken: token));
-                    }
-                    catch (System.Data.Common.DbException)
-                    {
-                        throw new InvalidOperationException("Не удалось подтвердить результат записи шаблона.");
-                    }
-                    if (affected == 0)
-                        throw new PhoneTemplateWriteRejectedException(
-                            "Модель или её шаблон были изменены либо удалены. Перечитайте данные и проверьте свой ввод.",
-                            baselineConflict: true);
-                    if (affected != 1)
-                        throw new InvalidOperationException("База данных не подтвердила изменение ровно одного шаблона.");
-                    return id;
-                }, ct);
-        }
-        catch (PhoneTemplateWriteRejectedException)
-        {
-            boundary.OnKnownNoEffect();
-            throw;
-        }
-        catch (Exception error) when (error is InventoryOperationPendingException or InventoryOperationReservationException)
-        {
-            boundary.OnKnownNoEffect();
-            throw;
-        }
-        catch (Exception error) when (error is System.Data.Common.DbException or InvalidOperationException or TimeoutException or IOException)
-        {
-            // Текст команды и диагностические сообщения SQL могут содержать параметры шаблона.
-            InventoryOperationReceipt? observed = null;
-            if (!ct.IsCancellationRequested)
-            {
-                try { observed = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct); }
-                catch (Exception readError) when (readError is System.Data.Common.DbException or InvalidOperationException or TimeoutException or IOException) { }
-            }
-            if (observed is { State: InventoryOperationState.Confirmed, ResultEntityId: var resultId } && resultId == id)
-                return observed;
-            throw new InvalidOperationException("Не удалось подтвердить результат записи шаблона.");
-        }
-
-        return RequireReceipt(receipt);
-
-        InventoryOperationReceipt RequireReceipt(InventoryOperationReceipt outcome)
-        {
-            if (outcome.State == InventoryOperationState.Rejected)
-                throw new PhoneTemplateWriteRejectedException("Запись ранее отклонена. Перечитайте шаблон.");
-            if (outcome.State != InventoryOperationState.Confirmed || outcome.ResultEntityId != id)
-                throw new InventoryOperationPendingException();
-            return outcome;
-        }
-    }
-
-    private static string PhoneTemplateScope(int id) => ModelConflictKey(id);
-
-    private static InventoryOperationJournal.Attempt PhoneTemplateAttempt(Employee actor, int id, Guid attemptId) =>
-        InventoryOperationJournal.ForEmployee(actor, attemptId, PhoneTemplateScope(id), PhoneTemplateWriteKind);
-
-    private static Employee RequireTemplateWriter(Employee? actor, int expectedEmployeeId) =>
-        actor is not null && actor.Id == expectedEmployeeId && actor.HasRole(Роли.Дежурный_инженер)
-            ? actor : throw new PhoneTemplateWriteRejectedException("Текущий сотрудник или его право сохранения шаблона не подтверждены.");
-
-    internal sealed class PhoneTemplateWriteRejectedException(string message, bool baselineConflict = false)
-        : InvalidOperationException(message)
-    {
-        internal bool BaselineConflict { get; } = baselineConflict;
+        await ExecuteVersionedUpdateAsync(db, SQLQueries.UPDATE_МоделиОборудования_ШаблонТелефона,
+            parameters, cancellationToken);
     }
 
 
@@ -588,9 +346,3 @@ public sealed class EquipmentModel : ILookupEntity
 /// <summary>Значения сохранённой модели, на которые опирается условное изменение.</summary>
 public sealed record EquipmentModelWriteBaseline(int Id, int EquipmentTypeId, DateTime? ChangedAt, string? PhoneTemplate);
 
-/// <summary>Фазы подтверждения попытки модели до свежей авторизации и до отправки DML.</summary>
-/// <param name="PrepareAsync">Подтверждает долговечную попытку до авторизации записи.</param>
-/// <param name="BeforeDispatch">Отмечает достижение границы первой возможной изменяющей команды.</param>
-/// <param name="OnKnownNoEffect">Отмечает доказанный сервером отсутствующий эффект условного UPDATE.</param>
-public sealed record EquipmentModelWriteBoundary(
-    Func<CancellationToken, Task> PrepareAsync, Action BeforeDispatch, Action OnKnownNoEffect);

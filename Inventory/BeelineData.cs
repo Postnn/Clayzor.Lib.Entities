@@ -62,9 +62,6 @@ public static class BeelineRules
 /// <summary>Подтверждённый отказ или конфликт параметров договора.</summary>
 public sealed class BeelineRejectedException(string message, Exception? inner = null) : InvalidOperationException(message, inner);
 
-/// <summary>Исход записи требует сверки и блокирует повтор команды.</summary>
-public sealed class BeelineUnknownException(Exception inner) : InvalidOperationException("Исход записи требует сверки.", inner);
-
 /// <summary>Читает договор и обновляет параметры с повторной проверкой identity и исходной версии.</summary>
 public static class BeelineData
 {
@@ -78,13 +75,10 @@ public static class BeelineData
         return (await ReadContractAsync(connection, null, number, ct), access.CanUpdate);
     });
 
-    private const string UpdateKind = "beeline.update";
-
-    /// <summary>Обновляет Time Zone и email после проверки прав и атомарно фиксирует итог в серверном журнале.</summary>
+    /// <summary>Обновляет Time Zone и email после проверки прав и исходной версии.</summary>
     public static async Task<BeelineContract?> SaveAsync(DbManager db, string? principal, int expectedEmployee,
-        BeelineContract original, BeelineDraft draft, IReadOnlyCollection<string> configuredZones, Guid attemptId, CancellationToken ct)
+        BeelineContract original, BeelineDraft draft, IReadOnlyCollection<string> configuredZones, CancellationToken ct)
     {
-        Employee actor;
         BeelineContract expected;
         try
         {
@@ -92,72 +86,46 @@ public static class BeelineData
             var errors = BeelineRules.Validate(draft, configuredZones);
             if (errors.Count > 0) throw new BeelineRejectedException(string.Join(" ", errors));
 
-            (actor, expected) = await db.RunDbAsync(connection => CheckWriteAsync(connection, null, ct));
+            (_, expected) = await db.RunDbAsync(connection => CheckWriteAsync(connection, null, ct));
+            EnsureBaseline(expected);
         }
         catch (Exception e) when (e is not BeelineRejectedException)
         {
             throw new BeelineRejectedException("Проверка данных завершилась ошибкой. Запись не начата.", e);
         }
 
-        var attempt = InventoryOperationJournal.ForEmployee(actor, attemptId, ConflictKey(expected.Number), UpdateKind);
-        BeelineContract? saved = null;
-        try
+        return await db.RunDbAsync(async connection =>
         {
-            var previous = await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
-            if (previous?.State == InventoryOperationState.Confirmed)
-                return await ReadConfirmedAsync();
-            if (previous?.State == InventoryOperationState.Rejected)
-                throw new BeelineRejectedException("Эта попытка уже отклонена. Сверьте актуальные параметры.");
-            if (previous is not null)
-                throw new InventoryOperationPendingException();
+            await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            BeelineContract current;
+            BeelineContract? saved;
+            try
+            {
+                (_, current) = await CheckWriteAsync(connection, transaction, ct);
+                EnsureBaseline(current);
+                ct.ThrowIfCancellationRequested();
+                if (!string.Equals(current.Number, expected.Number, StringComparison.Ordinal))
+                    throw new BeelineRejectedException("Номер договора изменился. Сверьте исходные данные.");
 
-            EnsureBaseline(expected);
-            var receipt = await InventoryOperationJournal.RunSqlAsync<BeelineRejectedException>(db, attempt,
-                async (connection, transaction, token) =>
-                {
-                    // Проверки и запись используют тот же SQL principal и ту же транзакцию.
-                    BeelineContract current;
-                    try
-                    {
-                        (_, current) = await CheckWriteAsync(connection, transaction, token);
-                        EnsureBaseline(current);
-                        token.ThrowIfCancellationRequested();
-                    }
-                    catch (Exception e) when (e is not BeelineRejectedException)
-                    {
-                        throw new BeelineRejectedException("Проверка данных завершилась ошибкой. Запись не начата.", e);
-                    }
-                    if (!string.Equals(current.Number, expected.Number, StringComparison.Ordinal))
-                        throw new BeelineRejectedException("Номер договора изменился. Сверьте исходные данные.");
+                var update = Command(SQLQueries.UPDATE_БилайнПараметры,
+                    new { id = Key(current.Number), timeZone = draft.TimeZone, email = draft.EmailManager }, transaction, ct);
+                var affected = await connection.QuerySingleAsync<int>(update);
+                if (affected != 1) throw new BeelineRejectedException("База не подтвердила обновление одного договора.");
 
-                    try
-                    {
-                        var update = Command(SQLQueries.UPDATE_БилайнПараметры,
-                            new { id = Key(current.Number), timeZone = draft.TimeZone, email = draft.EmailManager }, transaction, token);
-                        var affected = await connection.QuerySingleAsync<int>(update);
-                        if (affected != 1) throw new BeelineRejectedException("База не подтвердила обновление одного договора.");
+                saved = await ReadContractAsync(connection, transaction, current.Number, ct);
+                if (saved is null || saved.TimeZone != draft.TimeZone || saved.EmailManager != draft.EmailManager)
+                    throw new BeelineRejectedException("База не сохранила введённые параметры. Для мобильного бюджета проверьте настройки основного договора.");
+            }
+            catch (Exception e) when (e is not (BeelineRejectedException or TimeoutException or OperationCanceledException) &&
+                (e is not Microsoft.Data.SqlClient.SqlException sql || sql.Number != -2 && !DbManager.IsConnectivityError(sql)) &&
+                transaction.Connection is not null)
+            {
+                throw new BeelineRejectedException("База отклонила изменение параметров договора.", e);
+            }
 
-                        saved = await ReadContractAsync(connection, transaction, current.Number, token);
-                        if (saved is null || saved.TimeZone != draft.TimeZone || saved.EmailManager != draft.EmailManager)
-                            throw new BeelineRejectedException("База не сохранила введённые параметры. Для мобильного бюджета проверьте настройки основного договора.");
-                    }
-                    catch (Exception e) when (e is not (BeelineRejectedException or TimeoutException or OperationCanceledException) &&
-                        (e is not Microsoft.Data.SqlClient.SqlException sql || sql.Number != -2 && !DbManager.IsConnectivityError(sql)) &&
-                        transaction.Connection is not null)
-                    {
-                        throw new BeelineRejectedException("База отклонила изменение параметров договора.", e);
-                    }
-
-                    return null;
-                }, ct);
-            if (receipt.State == InventoryOperationState.Rejected)
-                throw new BeelineRejectedException("Эта попытка уже отклонена. Сверьте актуальные параметры.");
-            return saved ?? await ReadConfirmedAsync();
-        }
-        catch (Exception e) when (e is not (BeelineRejectedException or InventoryOperationPendingException or InventoryOperationReservationException))
-        {
-            throw new BeelineUnknownException(e);
-        }
+            await transaction.CommitAsync(CancellationToken.None);
+            return saved;
+        });
 
         async Task<(Employee Actor, BeelineContract Contract)> CheckWriteAsync(
             DbConnection connection, DbTransaction? transaction, CancellationToken token)
@@ -173,21 +141,6 @@ public static class BeelineData
             return (currentActor, current);
         }
 
-        async Task<BeelineContract?> ReadConfirmedAsync()
-        {
-            try
-            {
-                var (_, current) = await db.RunDbAsync(connection => CheckWriteAsync(connection, null, ct));
-                return current;
-            }
-            catch (Exception e) when (e is InvalidOperationException or TimeoutException or OperationCanceledException
-                or Microsoft.Data.SqlClient.SqlException)
-            {
-                // Повторное чтение не меняет уже доказанный серверный исход.
-                return null;
-            }
-        }
-
         void EnsureBaseline(BeelineContract current)
         {
             if (current.TimeZone != original.TimeZone || current.EmailManager != original.EmailManager ||
@@ -195,68 +148,6 @@ public static class BeelineData
                 throw new BeelineRejectedException("Параметры договора изменились. Сверьте исходные данные.");
         }
     }
-
-    /// <summary>Читает серверный исход по каноническому номеру после свежей проверки сотрудника и доступа к договору.</summary>
-    public static async Task<(InventoryOperationReceipt? Receipt, bool HasPending)> ReadReceiptAsync(DbManager db, string? principal, int expectedEmployee,
-        string number, CancellationToken ct)
-    {
-        var scope = await ReadAuthorizedScopeAsync(db, principal, expectedEmployee, number, ct);
-        if (scope is not { } access)
-            return (null, false);
-
-        var receipt = await InventoryOperationJournal.ReadLatestAsync(db, access.Actor, access.ConflictKey, ct);
-        return (receipt, await InventoryOperationJournal.IsScopePendingAsync(db, access.ConflictKey, ct));
-    }
-
-    /// <summary>Сверяет только указанную попытку изменения текущего договора после свежей проверки сотрудника и прав.</summary>
-    public static async Task<InventoryOperationReceipt?> ReadVerifiedReceiptAsync(DbManager db, string? principal,
-        int expectedEmployee, string number, Guid attemptId, CancellationToken ct)
-    {
-        if (attemptId == Guid.Empty)
-            return null;
-
-        var scope = await ReadAuthorizedScopeAsync(db, principal, expectedEmployee, number, ct);
-        if (scope is not { } access)
-            return null;
-
-        var attempt = InventoryOperationJournal.ForEmployee(access.Actor, attemptId, access.ConflictKey, UpdateKind);
-        return await InventoryOperationJournal.ReadAttemptAsync(db, attempt, ct);
-    }
-
-    /// <summary>Переносит только идентификаторы прежних попыток канонического договора для подтверждённого сотрудника.</summary>
-    public static async Task ImportLegacyAsync(DbManager db, string? principal, int expectedEmployee, string number,
-        IReadOnlyCollection<Guid> attemptIds, CancellationToken ct)
-    {
-        if (attemptIds.Count == 0)
-            return;
-
-        var scope = await ReadAuthorizedScopeAsync(db, principal, expectedEmployee, number, ct);
-        if (scope is not { } access || access.Number != number)
-            throw new BeelineRejectedException("Не удалось подтвердить договор для сверки прежней операции.");
-
-        var attempts = attemptIds.Distinct().Select(attemptId =>
-            InventoryOperationJournal.ForEmployee(access.Actor, attemptId, access.ConflictKey, UpdateKind)).ToArray();
-        await InventoryOperationJournal.ImportLegacyAsync(db, attempts, ct);
-    }
-
-    private static async Task<(Employee Actor, string ConflictKey, string Number)?> ReadAuthorizedScopeAsync(DbManager db, string? principal,
-        int expectedEmployee, string number, CancellationToken ct)
-    {
-        if (!BeelineRules.ValidNumber(number))
-            return null;
-
-        return await db.RunDbAsync<(Employee Actor, string ConflictKey, string Number)?>(async connection =>
-        {
-            var employee = await ReadActorAsync(connection, null, principal, expectedEmployee, ct);
-            if (!(await ReadAccessAsync(connection, null, employee, ct)).CanRead)
-                throw new UnauthorizedAccessException("Нет доступа к параметрам договора Билайн.");
-
-            var contract = await ReadContractAsync(connection, null, number, ct);
-            return contract is null ? null : (employee, ConflictKey(contract.Number), contract.Number);
-        });
-    }
-
-    private static string ConflictKey(string canonicalNumber) => "beeline:contract:" + canonicalNumber;
 
     private static async Task<Employee> ReadActorAsync(DbConnection connection, DbTransaction? transaction,
         string? principal, int expectedEmployee, CancellationToken ct)

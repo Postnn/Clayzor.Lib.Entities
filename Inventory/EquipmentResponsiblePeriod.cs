@@ -63,11 +63,11 @@ public sealed class EquipmentResponsiblePeriod
     }
 
     internal Task<int> IssueEnlistedAsync(DbConnection connection, DbTransaction transaction, DateTime fromUtc, CancellationToken ct) =>
-        EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, SQLQueries.INSERT_ОборудованиеСотрудниковEnlisted,
+        EquipmentPeriodWrite.ExecuteAsync(connection, transaction, SQLQueries.INSERT_ОборудованиеСотрудниковEnlisted,
             WriteParameters(fromUtc), EquipmentId, ct);
 
     internal Task<int> UpdateEnlistedAsync(DbConnection connection, DbTransaction transaction, DateTime fromUtc, CancellationToken ct) =>
-        EquipmentPeriodJournalWrite.ExecuteAsync(connection, transaction, SQLQueries.UPDATE_ОборудованиеСотрудниковEnlisted,
+        EquipmentPeriodWrite.ExecuteAsync(connection, transaction, SQLQueries.UPDATE_ОборудованиеСотрудниковEnlisted,
             WriteParameters(fromUtc), EquipmentId, ct);
 
     private object WriteParameters(DateTime fromUtc) => new
